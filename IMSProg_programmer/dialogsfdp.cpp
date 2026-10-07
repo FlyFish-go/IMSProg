@@ -16,7 +16,7 @@
 #include "ui_dialogsfdp.h"
 #include <QValidator>
 #include <QRegularExpression>
-#include "unistd.h"
+#include "platform_sleep.h"
 #include "memory"
 #include <QDebug>
 #include <QRegularExpression>
@@ -207,7 +207,7 @@ void DialogSFDP::on_pushButton_clicked()
         SPI_CONTROLLER_Write_One_Byte(0x05, programmerType);
         retval = SPI_CONTROLLER_Read_NByte(sfdpBuf.get(),2,SPI_CONTROLLER_SPEED_SINGLE, programmerType);
         SPI_CONTROLLER_Chip_Select_High(programmerType);
-        usleep(1);
+        imsprog_usleep(1);
         if (retval)
         {
            QMessageBox::about(this, tr("Error"), tr("Error reading register!"));
@@ -220,7 +220,7 @@ void DialogSFDP::on_pushButton_clicked()
         SPI_CONTROLLER_Write_One_Byte(0x35, programmerType);
         retval = SPI_CONTROLLER_Read_NByte(sfdpBuf.get(),2,SPI_CONTROLLER_SPEED_SINGLE, programmerType);
         SPI_CONTROLLER_Chip_Select_High(programmerType);
-        usleep(1);
+        imsprog_usleep(1);
         if (retval)
         {
            QMessageBox::about(this, tr("Error"), tr("Error reading register!"));
@@ -239,7 +239,7 @@ void DialogSFDP::on_pushButton_clicked()
         SPI_CONTROLLER_Write_One_Byte(0x15, programmerType);
         retval = SPI_CONTROLLER_Read_NByte(sfdpBuf.get(),2,SPI_CONTROLLER_SPEED_SINGLE, programmerType);
         SPI_CONTROLLER_Chip_Select_High(programmerType);
-        usleep(1);
+        imsprog_usleep(1);
         if (retval)
         {
            QMessageBox::about(this, tr("Error"), tr("Error reading register!"));
@@ -324,24 +324,24 @@ void DialogSFDP::on_pushButton_3_clicked()
        SPI_CONTROLLER_Chip_Select_Low(programmerType);
        SPI_CONTROLLER_Write_One_Byte(0x06, programmerType);
        SPI_CONTROLLER_Chip_Select_High(programmerType);
-       usleep(1);
+       imsprog_usleep(1);
 
        SPI_CONTROLLER_Chip_Select_Low(programmerType);
        SPI_CONTROLLER_Write_One_Byte(0x50, programmerType);
        SPI_CONTROLLER_Chip_Select_High(programmerType);
-       usleep(1);
+       imsprog_usleep(1);
 
        SPI_CONTROLLER_Chip_Select_Low(programmerType);
        SPI_CONTROLLER_Write_One_Byte(0x01, programmerType);
        SPI_CONTROLLER_Write_One_Byte(r[0], programmerType);
        if (numOfRegisters > 0) SPI_CONTROLLER_Write_One_Byte(r[1], programmerType);
        SPI_CONTROLLER_Chip_Select_High(programmerType);
-       usleep(1);
+       imsprog_usleep(1);
 
        SPI_CONTROLLER_Chip_Select_Low(programmerType);
        SPI_CONTROLLER_Write_One_Byte(0x04, programmerType);
        SPI_CONTROLLER_Chip_Select_High(programmerType);
-       usleep(1);
+       imsprog_usleep(1);
 
        //Close the CH341a device
        ProgDeviceClose(programmerType);
@@ -354,49 +354,49 @@ void DialogSFDP::on_pushButton_3_clicked()
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x06, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x50, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x01, programmerType);
            SPI_CONTROLLER_Write_One_Byte(r[0], programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x04, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            //Close the CH341a device
            ProgDeviceClose(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            stCH341 = ProgDeviceInit(programmerType, 0, 5000); // 5MHz
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x06, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x50, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x31, programmerType);
            SPI_CONTROLLER_Write_One_Byte(r[1], programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x04, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            //Close the CH341a device
            ProgDeviceClose(programmerType);
@@ -410,23 +410,23 @@ void DialogSFDP::on_pushButton_3_clicked()
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x06, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x50, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x11, programmerType);
            SPI_CONTROLLER_Write_One_Byte(r[2], programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x04, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            //Close the CH341a device
            ProgDeviceClose(programmerType);

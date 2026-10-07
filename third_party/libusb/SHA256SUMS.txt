@@ -1,0 +1,6 @@
+77668e48506162d3a380fda95e09e5e78dd8af174762b0105578715d5262b776  ./README.txt
+084bdaff4f56fa59a61231db2e96cc1f680e8194b7af62b701c0be3e6833aa9b  ./libusb-1.0.30-imsprog-corresponding-source.tar.gz
+fd0f592fc0b4140d1eebabdf909ac9beb2042ec8e1b590b9d314651d828fd634  ./libusb-portable-libusbk.patch
+5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a  ./licenses/libusb-LGPL-2.1.txt
+058fbd0223733c26b93dae46d8cef249d4d363623c51c12372ecf93dd5ed2d1b  ./licenses/libusbK-AUTHORS.txt
+0649d566561ce1a8b0f7521c4c62e046f7ef81cefe0a993c9463a3e3f4a8a328  ./licenses/libusbK-BSD-3-Clause.txt

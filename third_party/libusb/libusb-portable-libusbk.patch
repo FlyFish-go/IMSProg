@@ -1,0 +1,67 @@
+diff --git a/libusb/libusb-1.0.rc b/libusb/libusb-1.0.rc
+index bcb10fa..6163d3a 100644
+--- a/libusb/libusb-1.0.rc
++++ b/libusb/libusb-1.0.rc
+@@ -40,7 +40,7 @@ BEGIN
+ 			VALUE "LegalCopyright", "See individual source files, GNU LGPL v2.1 or later.\0"
+ 			VALUE "LegalTrademarks", "http://www.gnu.org/licenses/lgpl-2.1.html\0"
+ 			VALUE "OriginalFilename", "libusb-1.0.dll\0"
+-			VALUE "PrivateBuild", "\0"
++			VALUE "PrivateBuild", "IMSProg portable userspace libusbK loader, 2026-10-06\0"
+ 			VALUE "ProductName", "libusb-1.0\0"
+ 			VALUE "ProductVersion", LIBUSB_VERSIONSTRING
+ 			VALUE "SpecialBuild", "\0"
+diff --git a/libusb/os/windows_winusb.c b/libusb/os/windows_winusb.c
+index b84c4ac..1eea185 100644
+--- a/libusb/os/windows_winusb.c
++++ b/libusb/os/windows_winusb.c
+@@ -30,6 +30,7 @@
+ #include <ctype.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <wchar.h>
+ 
+ #include "libusbi.h"
+ #include "windows_winusb.h"
+@@ -2869,6 +2870,32 @@ const struct windows_usb_api_backend usb_api_backend[USB_API_MAX] = {
+ 		}										\
+ 	} while (0)
+ 
++/* IMSProg portable userspace build, 2026-10-06: allow only an absolute
++ * executable-directory libusbK.dll before the upstream System32 fallback.
++ * Never search the current directory or PATH, and never install a driver. */
++static HMODULE load_portable_libusbk(struct libusb_context *ctx)
++{
++	const DWORD capacity = 32768;
++	wchar_t *path = calloc(capacity, sizeof(*path));
++	HMODULE module = NULL;
++	if (path != NULL) {
++		DWORD length = GetModuleFileNameW(NULL, path, capacity);
++		if (length > 0 && length < capacity) {
++			wchar_t *separator = wcsrchr(path, L'\\');
++			if (separator != NULL &&
++				(size_t)(separator + 1 - path) + 12 < capacity) {
++				wcscpy(separator + 1, L"libusbK.dll");
++				module = LoadLibraryExW(path, NULL,
++					LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
++				if (module != NULL)
++					usbi_info(ctx, "using executable-directory libusbK.dll");
++			}
++		}
++		free(path);
++	}
++	return module != NULL ? module : load_system_library(ctx, "libusbK");
++}
++
+ static bool winusbx_init(struct libusb_context *ctx)
+ {
+ 	HMODULE hWinUSB, hlibusbK;
+@@ -2913,7 +2940,7 @@ cleanup_winusb:
+ 		usbi_info(ctx, "WinUSB DLL is not available");
+ 	}
+ 
+-	hlibusbK = load_system_library(ctx, "libusbK");
++	hlibusbK = load_portable_libusbk(ctx);
+ 	if (hlibusbK != NULL) {
+ 		LibK_GetVersion_t pLibK_GetVersion;
+ 		LibK_GetProcAddress_t pLibK_GetProcAddress;

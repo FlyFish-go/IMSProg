@@ -43,6 +43,15 @@
 #include "hexutility.h"
 #include <stddef.h>
 #include <stdint.h>
+#include <QSignalBlocker>
+#include <limits>
+#include <QPlainTextEdit>
+#include <QVBoxLayout>
+#include <QDialogButtonBox>
+#include <QClipboard>
+#ifdef _WIN32
+#include "windows/ch347_win32.h"
+#endif
 
 
 MainWindow::MainWindow(QWidget *parent) :
@@ -113,10 +122,12 @@ MainWindow::MainWindow(QWidget *parent) :
  ui->comboBox_i2cSpeed->addItem("400 kHz", 400);
  ui->comboBox_i2cSpeed->addItem("750 kHz", 750);
  ui->comboBox_i2cSpeed->setCurrentIndex(2);
- currentI2CBusSpeed = 2;
+ currentI2CBusSpeed = static_cast<uint16_t>(ui->comboBox_i2cSpeed->currentData().toUInt());
 
- ui->comboBox_raw->addItem("Data only", 0);
- ui->comboBox_raw->addItem("Data + ECC", 1);
+ ui->comboBox_raw->addItem(tr("Main only"), 0);
+ ui->comboBox_raw->addItem(tr("Main + OOB"), 1);
+ ui->comboBox_onDieEcc->addItem(tr("On (corrected read)"), 1);
+ ui->comboBox_onDieEcc->addItem(tr("Off (raw read)"), 0);
 
  current_programmer = 0;
 
@@ -175,11 +186,13 @@ MainWindow::MainWindow(QWidget *parent) :
      }
      settings.endGroup();
  }
+ applyPlatformRestrictions();
  // connect and status check
- if (current_programmer < 2) ui->lStatus->setText("CH341A");
+ if (current_programmer < 2) ui->lStatus->setText("CH341A/B");
  if ((current_programmer == 2) || (current_programmer == 3)) ui->lStatus->setText("CH347T");
  if (current_programmer == 4) ui->lStatus->setText("FT232H");
- statusCH341 =  ProgDeviceInit(current_programmer, currentChipType, currentI2CBusSpeed);
+ statusCH341 = ProgDeviceInit(current_programmer, currentChipType,
+     currentChipType == 1 ? currentI2CBusSpeed : getInterfaceSpeed(current_programmer, currentChipType, currentDelay));
  ch341StatusFlashing();
  ProgDeviceClose(current_programmer);
  QFont heFont;
@@ -202,6 +215,9 @@ MainWindow::MainWindow(QWidget *parent) :
    }
  progInit();
  defaultSpeed = getInterfaceSpeed(current_programmer, currentChipType, currentDelay);
+ uiReady = true;
+ updateNandControlVisibility();
+ updateNandSelectionInfo();
  if (cmdStarted) on_actionOpen_triggered();
 }
 
@@ -212,6 +228,7 @@ MainWindow::~MainWindow()
 
 void MainWindow::on_pushButton_clicked()
 {
+  if (!validateNandOperation(false, false)) return;
   //Reading data from chip
   newFileName = ui->comboBox_name->currentText();
   int res = 0;
@@ -273,7 +290,13 @@ void MainWindow::on_pushButton_clicked()
              sectorsPerBlock = currentBlockSize / currentPageSize;
              if (nandRaw == true) step = currentBlockSize + currentECCsize * sectorsPerBlock;
              else step = currentBlockSize;
-             nand_ECCEnable(current_programmer);
+             if (!prepareNandOperation(tr("Read")))
+                                {
+                                    ProgDeviceClose(current_programmer);
+                                    doNotDisturbCancel();
+                                    clearCheckboxes();
+                                    return;
+                                }
           break;
           default:
              //Unsupport
@@ -283,6 +306,16 @@ void MainWindow::on_pushButton_clicked()
              ui->checkBox_3->setStyleSheet("");
        return;
           }
+       if (currentChipType == 6)
+       {
+           // Geometry may have changed since the last buffer allocation.
+           // Clear stale bytes so interrupted reads cannot mix two different dumps.
+           chipData.resize(static_cast<int>(nandImageSize()));
+           chipData.fill(char(0xff));
+           nandReadIncomplete = true;
+           filled = false;
+           hexEdit->setData(chipData);
+       }
        //progerssbar settings
        int currentPercent = 0;
        int lastPercent = -1;
@@ -336,12 +369,21 @@ void MainWindow::on_pushButton_clicked()
           // if res=-1 - error, stop
           if (statusCH341 != 0)
             {
-                QMessageBox::about(this, tr("Error"), tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!"));
+                showConnectionError();
                 doNotDisturbCancel();
-                break;
+                ProgDeviceClose(current_programmer);
+                return;
             }
           if (res <= 0)
             {
+               if (currentChipType == 6)
+               {
+                   hexEdit->setData(chipData);
+                   ui->label_nandInfo->setText(tr("Read failed at block %1 (error %2). Buffer is incomplete; unread bytes are FF.").arg(curBlock).arg(res));
+                   if (res == NAND_ERROR_ECC_UNCORRECTABLE)
+                       ui->label_nandInfo->setText(ui->label_nandInfo->text() + " " + tr("On-die ECC reported an uncorrectable page."));
+                   qWarning().noquote() << ui->label_nandInfo->text();
+               }
                QMessageBox::about(this, tr("Error"), tr("Error reading block ") + QString::number(curBlock));
                ProgDeviceClose(current_programmer);
                ui->pushButton->setStyleSheet(grnKeyStyle);
@@ -379,6 +421,8 @@ void MainWindow::on_pushButton_clicked()
        return;
     }
     hexEdit->setData(chipData);
+    nandReadIncomplete = false;
+    finishNandRead(tr("Read complete"));
     ui->statusMessage->setText("");
     ui->progressBar->setValue(0);
     ui->pushButton->setStyleSheet(grnKeyStyle);
@@ -388,7 +432,7 @@ void MainWindow::on_pushButton_clicked()
   else
   {
       ch341StatusFlashing();
-      QMessageBox::about(this, tr("Error"), tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!"));
+      showConnectionError();
   }
   ProgDeviceClose(current_programmer);
   doNotDisturbCancel();
@@ -401,27 +445,37 @@ void MainWindow::on_pushButton_2_clicked()
     timer->stop();
     //Detect button - searching the connected chip in database
     u8 sr;
-    statusCH341 = ProgDeviceInit(current_programmer, currentChipType, currentI2CBusSpeed);
+    statusCH341 = ProgDeviceInit(current_programmer, currentChipType,
+        currentChipType == 1 ? currentI2CBusSpeed : getInterfaceSpeed(current_programmer, currentChipType, currentDelay));
     ch341StatusFlashing();
     if (statusCH341 != 0)
       {
-        QMessageBox::about(this, tr("Error"), tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!"));
+        showConnectionError();
         timer->start();
         return;
       }
 
     ui->pushButton_2->setStyleSheet(redKeyStyle);
     ui->crcEdit->setText("");
-    int i, index;
+    int i, index, idResult = 0;
     // print JEDEC info
     unsigned char bufid[5] = {0xff,0xff,0xff,0xff,0xff};
     if (currentChipType != 6)
     {
-       snor_read_devid(bufid, 5, current_programmer);
+       idResult = snor_read_devid(bufid, 5, current_programmer);
     }
     else
     {
-        nand_read_devid(bufid, 5, current_programmer);
+        idResult = nand_read_devid(bufid, 5, current_programmer);
+    }
+
+    if (idResult != 0)
+    {
+        QMessageBox::warning(this, tr("Error"), tr("NAND identification failed. Operation stopped."));
+        ui->pushButton_2->setStyleSheet(grnKeyStyle);
+        ProgDeviceClose(current_programmer);
+        timer->start();
+        return;
     }
 
     if ((bufid[0] == 0xff) && (bufid[1] == 0xff) && (bufid[2] == 0xff) && (currentChipType != 5))
@@ -437,7 +491,15 @@ void MainWindow::on_pushButton_2_clicked()
 
     if ((currentChipType == 6) && ((bufid[0] == 0xff) ||(bufid[0] == 0x00)))
     {
-        nand_read_devid(bufid, 5, current_programmer);
+        idResult = nand_read_devid(bufid, 5, current_programmer);
+        if (idResult != 0)
+        {
+            QMessageBox::warning(this, tr("Error"), tr("NAND identification failed. Operation stopped."));
+            ui->pushButton_2->setStyleSheet(grnKeyStyle);
+            ProgDeviceClose(current_programmer);
+            timer->start();
+            return;
+        }
     }
 
     ui->jedecEdit->setText(bytePrint(bufid[0]) + " " + bytePrint(bufid[1]) + " " + bytePrint(bufid[2]));
@@ -649,8 +711,10 @@ void MainWindow::on_comboBox_size_currentIndexChanged(int index)
     else chipData.resize(static_cast<int>(currentChipSize));
     chipData.fill(char(0xff));
     filled = 1;
+    nandReadIncomplete = false;
     hexEdit->setData(chipData);
     }
+    updateNandSelectionInfo();
     index = index + 0;
 }
 
@@ -669,6 +733,7 @@ void MainWindow::on_comboBox_page_currentIndexChanged(int index)
     {
     currentNumBlocks = currentChipSize / currentPageSize;
     }
+    updateNandSelectionInfo();
     index = index + 0;
 }
 
@@ -679,6 +744,9 @@ void MainWindow::on_actionDetect_triggered()
 
 void MainWindow::on_actionSave_triggered()
 {
+    if (nandReadIncomplete && QMessageBox::warning(this, tr("Incomplete NAND read"),
+            tr("The last NAND read did not complete. Unread bytes are FF. Save this incomplete buffer anyway?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
 
     lastDirectory.replace(".cap", ".bin");
     lastDirectory.replace(".CAP", ".bin");
@@ -708,6 +776,11 @@ void MainWindow::on_actionSave_triggered()
 
 void MainWindow::on_actionErase_triggered()
 {
+    lastOperationSucceeded = false;
+    if (!validateNandOperation(false, false)) return;
+    if (currentChipType == 6 && QMessageBox::warning(this, tr("Erase NAND"),
+            tr("This erases the whole selected NAND chip, including main data and OOB. It is not a selected-block repair. Continue?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
     //statusCH341 = ch341a_spi_init();
     int ret;
     uint32_t curBlock, numBlocks, step;
@@ -725,7 +798,7 @@ void MainWindow::on_actionErase_triggered()
 
     if (statusCH341 != 0)
       {
-        QMessageBox::about(this, tr("Error"), tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!"));
+        showConnectionError();
         return;
       }
     ui->statusMessage->setText(tr("Erasing the ") + ui->comboBox_name->currentText());
@@ -803,7 +876,7 @@ void MainWindow::on_actionErase_triggered()
     {
         ui->progressBar->setValue(50);
         s95_full_erase(current_programmer);
-        sleep(1);
+        imsprog_sleep(1);
     }
     if (currentChipType == 2)
     {
@@ -812,7 +885,7 @@ void MainWindow::on_actionErase_triggered()
         ui->progressBar->setValue(50);
         if (current_programmer < 4) Erase_EEPROM_3wire_param(currentAlgorithm);
         else ft232hMWEraseAll(currentAlgorithm);
-        sleep(1);
+        imsprog_sleep(1);
     }
     if (currentChipType == 1)
     {
@@ -858,7 +931,7 @@ void MainWindow::on_actionErase_triggered()
     {
         ui->progressBar->setValue(50);
         at45_full_erase(current_programmer);
-        sleep(1);
+        imsprog_sleep(1);
     }
     if ((currentChipType == 5) && ((currentAlgorithm & 0x10) == 0))
     {
@@ -880,6 +953,13 @@ void MainWindow::on_actionErase_triggered()
     }
     if (currentChipType == 6)
     {
+       if (!prepareNandOperation(tr("Erase")))
+       {
+           ProgDeviceClose(current_programmer);
+           doNotDisturbCancel();
+           clearCheckboxes();
+           return;
+       }
        uint32_t sectInBlock;
        int retval;
        numBlocks = currentChipSize / currentBlockSize;
@@ -894,6 +974,14 @@ void MainWindow::on_actionErase_triggered()
                    retval = nand_checkBadBlock(static_cast<uint32_t>(curBlock), static_cast<uint32_t>(currentPageSize), static_cast<uint32_t>(sectInBlock), current_programmer);
                }
                else retval = 0;
+               if (retval < 0)
+               {
+                   QMessageBox::warning(this, tr("Error"), tr("Bad-block check failed. Erase stopped."));
+                   ProgDeviceClose(current_programmer);
+                   doNotDisturbCancel();
+                   clearCheckboxes();
+                   return;
+               }
 
                if (retval == 0) //skip bad sectors, if checkbox enable
                {
@@ -921,6 +1009,7 @@ void MainWindow::on_actionErase_triggered()
 
     }
 
+    lastOperationSucceeded = true;
     doNotDisturbCancel();
     ui->checkBox->setStyleSheet("");
     ui->statusMessage->setText("");
@@ -964,7 +1053,7 @@ void MainWindow::on_actionOpen_triggered()
     QFile file(fileName);
     ui->statusMessage->setText("");
 
-    if ((currentChipType == 6) && (nandRaw == true)) arraySize = currentChipSize + currentChipSize/currentPageSize * currentECCsize;
+    if (currentChipType == 6) arraySize = static_cast<uint32_t>(nandImageSize());
     else arraySize = currentChipSize;
 
     if ((info.size() > arraySize) && (currentChipSize != 0))
@@ -979,6 +1068,7 @@ void MainWindow::on_actionOpen_triggered()
     ui->statusMessage->setText(tr("Current file: ") + info.fileName());
     preparingToCompare(0);
     filled = 0;
+    nandReadIncomplete = false;
     buf.resize(static_cast<int>(info.size()));
     buf = file.readAll();
     if (currentChipSize == 0)
@@ -986,7 +1076,10 @@ void MainWindow::on_actionOpen_triggered()
         chipData.resize(static_cast<int>(info.size()));
     }
 
-    chipData.replace(0, static_cast<int>(info.size()), buf);
+    if (currentChipType == 6)
+        chipData = buf; // Keep the exact file length; never silently pad/reuse an old NAND tail.
+    else
+        chipData.replace(0, static_cast<int>(info.size()), buf);
     hexEdit->setData(chipData);
 
     file.close();
@@ -1038,6 +1131,8 @@ void MainWindow::on_actionExtract_from_ASUS_CAP_triggered()
 
 void MainWindow::on_actionWrite_triggered()
 {
+    lastOperationSucceeded = false;
+    if (!validateNandOperation(true, true)) return;
     //Writting data to chip
     int res = 0, badResult = 0;
     uint32_t numBlocks, step, sectorsPerBlock;
@@ -1087,17 +1182,15 @@ void MainWindow::on_actionWrite_triggered()
                       case 6:             //NAND 35xx, GD5xx, W25xx
                          numBlocks = currentChipSize / currentBlockSize;
                          sectorsPerBlock = currentBlockSize / currentPageSize;
-                         if (nandRaw == true)
+                         step = currentBlockSize + (nandRaw ? currentECCsize * sectorsPerBlock : 0);
+                         if (!prepareNandOperation(tr("Write")) || nand_unprotect(current_programmer) != 0)
                          {
-                             step = currentBlockSize + currentECCsize * sectorsPerBlock;
-                             nand_ECCDisable(current_programmer);
+                             QMessageBox::warning(this, tr("Error"), tr("NAND setup failed. No data was programmed."));
+                             ProgDeviceClose(current_programmer);
+                             doNotDisturbCancel();
+                             clearCheckboxes();
+                             return;
                          }
-                         else
-                         {
-                             step = currentBlockSize;
-                             nand_ECCEnable(current_programmer);
-                         }
-                         nand_unprotect(current_programmer);
                       break;
                       default:
                          //Unsupport
@@ -1156,14 +1249,19 @@ void MainWindow::on_actionWrite_triggered()
                           //NAND
                           if ((nandSettings & 0x0f) == 0x01)
                           {
-                             //skip bad block enabled
-                             badResult = nand_checkBadBlock(k, currentPageSize, sectorsPerBlock, current_programmer);
-                             if(badResult != 1) addrSrc = addrSrc + step;
+                              badResult = nand_checkBadBlock(k, currentPageSize, sectorsPerBlock, current_programmer);
+                              if (badResult < 0) { res = badResult; break; }
+                              if (badResult == 1)
+                              {
+                                  // Preserve physical addresses for main+OOB images.
+                                  // Main-only retains the upstream logical skip/compact policy.
+                                  if (nandRaw) addrSrc += step;
+                                  res = 1;
+                                  break;
+                              }
                           }
-                          else addrSrc = addrSrc + step;
-                          if (nandRaw == true) nand_block_write(buf.get(), currentPageSize + currentECCsize, k, sectorsPerBlock, current_programmer);
-                          else res = nand_block_write(buf.get(), currentPageSize, k, sectorsPerBlock, current_programmer);
-                          if (res==0) res = 1;
+                          res = nand_block_write(buf.get(), currentPageSize + (nandRaw ? currentECCsize : 0), k, sectorsPerBlock, current_programmer);
+                          if (res == 0) { addrSrc += step; res = 1; }
                        break;
                        default:
                           //Unsupport
@@ -1176,10 +1274,10 @@ void MainWindow::on_actionWrite_triggered()
          // if res=-1 - error, stop
          if (statusCH341 != 0)
            {
-             QMessageBox::about(this, tr("Error"), tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!"));
+             showConnectionError();
              doNotDisturbCancel();
              ProgDeviceClose(current_programmer);
-             break;
+             return;
            }
          if (res <= 0)
            {
@@ -1206,6 +1304,16 @@ void MainWindow::on_actionWrite_triggered()
                 lastPercent = currentPercent;
             }
       }
+      if (currentChipType == 6 && quint64(addrSrc) != nandImageSize())
+      {
+          QMessageBox::warning(this, tr("Incomplete NAND write"),
+              tr("Bad-block skipping exhausted chip capacity before all source bytes were programmed. Some blocks were already written."));
+          ProgDeviceClose(current_programmer);
+          doNotDisturbCancel();
+          clearCheckboxes();
+          return;
+      }
+      lastOperationSucceeded = true;
     }
     else
     {
@@ -1220,7 +1328,7 @@ void MainWindow::on_actionWrite_triggered()
     else
     {
         ch341StatusFlashing();
-        QMessageBox::about(this, tr("Error"), tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!"));
+        showConnectionError();
     }
     ProgDeviceClose(current_programmer);
 }
@@ -1356,6 +1464,8 @@ void MainWindow::on_comboBox_name_currentTextChanged(const QString &arg1)
 
 void MainWindow::on_actionVerify_triggered()
 {
+    lastOperationSucceeded = false;
+    if (!validateNandOperation(false, true)) return;
     //Reading and veryfying data from chip
     int res = 0;
     uint32_t step, numBlocks, sectorsPerBlock;
@@ -1407,7 +1517,13 @@ void MainWindow::on_actionVerify_triggered()
                                 sectorsPerBlock = currentBlockSize / currentPageSize;
                                 if (nandRaw == true) step = currentBlockSize + currentECCsize * sectorsPerBlock;
                                 else step = currentBlockSize;
-                                nand_ECCEnable(current_programmer);
+                                if (!prepareNandOperation(tr("Verify")))
+                                {
+                                    ProgDeviceClose(current_programmer);
+                                    doNotDisturbCancel();
+                                    clearCheckboxes();
+                                    return;
+                                }
                              break;
                              default:
                                 //Unsupport
@@ -1476,12 +1592,19 @@ void MainWindow::on_actionVerify_triggered()
                     // if res=-1 - error, stop
                     if (statusCH341 != 0)
                     {
-                       QMessageBox::about(this, tr("Error"), tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!"));
+                       showConnectionError();
                        doNotDisturbCancel();
-                       break;
+                       ProgDeviceClose(current_programmer);
+                       return;
                     }
                     if (res <= 0)
                     {
+                        if (currentChipType == 6)
+                        {
+                            ui->label_nandInfo->setText(tr("NAND operation failed at block/page %1 (error %2).").arg(curBlock).arg(res));
+                            if (res == NAND_ERROR_ECC_UNCORRECTABLE)
+                                ui->label_nandInfo->setText(ui->label_nandInfo->text() + " " + tr("On-die ECC reported an uncorrectable page."));
+                        }
                         QMessageBox::about(this, tr("Error"), tr("Error reading block ") + QString::number(curBlock));
                         ProgDeviceClose(current_programmer);
                         ui->pushButton->setStyleSheet(grnKeyStyle);
@@ -1534,22 +1657,34 @@ void MainWindow::on_actionVerify_triggered()
              ui->checkBox_3->setStyleSheet("");
              ui->crcEdit->setText(getCRC32(chipData));
              ProgDeviceClose(current_programmer);
+             lastOperationSucceeded = true;
+             finishNandRead(tr("Verify complete"));
              QMessageBox::about(this, tr("Ok!"), tr("The operation was successful!"));
     }
       else
       {
           ch341StatusFlashing();
-          QMessageBox::about(this, tr("Error"), tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!"));
+          showConnectionError();
       }
 }
 
 void MainWindow::on_pushButton_3_clicked()
 {
+    const bool erase = ui->checkBox->isChecked();
+    const bool blankCheck = ui->checkBox_1->isChecked();
+    const bool write = ui->checkBox_2->isChecked();
+    const bool verify = ui->checkBox_3->isChecked();
+    if (!validateNandOperation(write, write || verify)) return;
     ui->pushButton_3->setStyleSheet(redKeyStyle);
-    if (ui->checkBox->isChecked())   on_actionErase_triggered();
-    if (ui->checkBox_1->isChecked()) on_actionCheck_erase_triggered();
-    if (ui->checkBox_2->isChecked()) on_actionWrite_triggered();
-    if (ui->checkBox_3->isChecked()) on_actionVerify_triggered();
+    const auto run = [this](bool selected, void (MainWindow::*action)()) {
+        if (!selected) return true;
+        (this->*action)();
+        return lastOperationSucceeded;
+    };
+    if (run(erase, &MainWindow::on_actionErase_triggered) &&
+        run(blankCheck, &MainWindow::on_actionCheck_erase_triggered) &&
+        run(write, &MainWindow::on_actionWrite_triggered))
+        run(verify, &MainWindow::on_actionVerify_triggered);
     ui->pushButton_3->setStyleSheet(grnKeyStyle);
 }
 
@@ -1689,6 +1824,7 @@ void MainWindow::on_comboBox_type_currentIndexChanged(int index)
     ui->comboBox_name->addItem("");
     ui->jedecEdit->setText("");
     currentChipType = static_cast<uint8_t>(ui->comboBox_type->itemData(index).toInt());
+    updateNandControlVisibility();
 
     ui->comboBox_size->clear();
     ui->comboBox_page->clear();
@@ -1809,7 +1945,7 @@ void MainWindow::on_comboBox_type_currentIndexChanged(int index)
      ui->comboBox_size->setCurrentIndex(0);
      ui->comboBox_addr4bit->setCurrentIndex(0);
      ui->comboBox_ECC->setCurrentIndex(0);
-     if ((index > 0) && (index < 3))
+     if ((currentChipType > 0) && (currentChipType < 3))
      {
          ui->pushButton_2->hide();
          ui->comboBox_block->hide();
@@ -1820,9 +1956,9 @@ void MainWindow::on_comboBox_type_currentIndexChanged(int index)
          ui->actionChip_info->setDisabled(true);
 
      }
-     if (index !=0) ui->actionSecurity_registers->setEnabled(false);
+     if (currentChipType != 0) ui->actionSecurity_registers->setEnabled(false);
 
-     if (index == 0)
+     if (currentChipType == 0)
      {
          ui->pushButton_2->show();
          ui->comboBox_addr4bit->show();
@@ -1833,7 +1969,7 @@ void MainWindow::on_comboBox_type_currentIndexChanged(int index)
          ui->actionChip_info->setEnabled(true);
          ui->actionSecurity_registers->setEnabled(true);
      }
-     if (index != 1)
+     if (currentChipType != 1)
      {
          ui->comboBox_i2cSpeed->hide();
          ui->label_10->hide();
@@ -1843,7 +1979,7 @@ void MainWindow::on_comboBox_type_currentIndexChanged(int index)
          ui->comboBox_i2cSpeed->show();
          ui->label_10->show();
      }
-     if (index > 2)
+     if (currentChipType > 2)
      {
          ui->pushButton_2->hide();
          ui->comboBox_block->hide();
@@ -1853,12 +1989,12 @@ void MainWindow::on_comboBox_type_currentIndexChanged(int index)
          ui->actionDetect->setDisabled(true);
          ui->actionChip_info->setEnabled(true);
      }
-     if (index == 5)
+     if (currentChipType == 5)
      {
           ui->pushButton_2->show();
           ui->actionDetect->setEnabled(true);
      }
-     if (index == 6)
+     if (currentChipType == 6)
      {
          ui->pushButton_2->show();
          ui->label_8->hide();
@@ -1868,20 +2004,28 @@ void MainWindow::on_comboBox_type_currentIndexChanged(int index)
          ui->comboBox_block->show();
          ui->comboBox_ECC->show();
          ui->comboBox_raw->show();
+         ui->comboBox_onDieEcc->show();
+         ui->label_onDieEcc->show();
+         ui->label_nandInfo->show();
          ui->actionDetect->setEnabled(true);
          ui->actionChip_info->setEnabled(true);
          ui->actionSecurity_registers->setEnabled(true);
          ui->actionBad_block_management->setEnabled(true);
      }
-     if (index != 6)
+     if (currentChipType != 6)
      {
          ui->label_11->hide();
          ui->comboBox_ECC->hide();
          ui->comboBox_raw->hide();
+         ui->comboBox_onDieEcc->hide();
+         ui->label_onDieEcc->hide();
+         ui->label_nandInfo->hide();
          ui->label_12->hide();
          ui->actionBad_block_management->setEnabled(false);
-         ui->comboBox_raw->setCurrentIndex(0);
+
      }
+    updateNandControlVisibility();
+    updateNandSelectionInfo();
 }
 
 void MainWindow::on_comboBox_addr4bit_currentIndexChanged(int index)
@@ -1899,6 +2043,8 @@ void MainWindow::on_comboBox_i2cSpeed_currentIndexChanged(int index)
 void MainWindow::on_comboBox_ECC_currentIndexChanged(int index)
 {
     currentECCsize = (ui->comboBox_ECC->currentData().toUInt()) * 64;
+    if (uiReady && currentChipType == 6) on_comboBox_size_currentIndexChanged(index);
+    updateNandSelectionInfo();
     index++;
 }
 
@@ -1981,12 +2127,17 @@ void MainWindow::doNotDisturb()
    ui->actionSecurity_registers->setDisabled(true);
    ui->actionBad_block_management->setDisabled(true);
    ui->actionStop->setDisabled(false);
+   ui->checkBox->setEnabled(false);
+   ui->checkBox_1->setEnabled(false);
+   ui->checkBox_2->setEnabled(false);
+   ui->checkBox_3->setEnabled(false);
 
    ui->actionCH341A_B_v1_2->setDisabled(true);
    ui->actionCH341A_v1_7->setDisabled(true);
    ui->actionCH347T->setDisabled(true);
    ui->actionCH347T_v1_1->setDisabled(true);
    ui->actionShow_programmer_version->setDisabled(true);
+   ui->actionConnection_diagnostics->setDisabled(true);
 
    ui->pushButton->blockSignals(true);
    ui->pushButton_2->blockSignals(true);
@@ -2003,9 +2154,12 @@ void MainWindow::doNotDisturb()
    ui->comboBox_i2cSpeed->setDisabled(true);
    ui->comboBox_ECC->setDisabled(true);
    ui->comboBox_raw->setDisabled(true);
+   ui->comboBox_onDieEcc->setDisabled(true);
+   ui->actionFT232H_v1_2->setDisabled(true);
 
    hexEdit->blockSignals(true);
    timer->stop();
+   updateNandControlVisibility();
 }
 
 void MainWindow::doNotDisturbCancel()
@@ -2043,10 +2197,15 @@ void MainWindow::doNotDisturbCancel()
    ui->actionCH347T->setDisabled(false);
    ui->actionCH347T_v1_1->setDisabled(false);
    ui->actionShow_programmer_version->setDisabled(false);
+   ui->actionConnection_diagnostics->setDisabled(false);
    if ((currentChipType == 0) || (currentChipType == 6) || (currentChipType > 2)) ui->actionChip_info->setDisabled(false);
    if ((currentChipType == 0) || (currentChipType == 6)) ui->actionSecurity_registers->setDisabled(false);
    if (currentChipType == 6) ui->actionBad_block_management->setDisabled(false);
    ui->actionStop->setDisabled(true);
+   ui->checkBox->setEnabled(true);
+   ui->checkBox_1->setEnabled(true);
+   ui->checkBox_2->setEnabled(true);
+   ui->checkBox_3->setEnabled(true);
 
    ui->pushButton->blockSignals(false);
    ui->pushButton_2->blockSignals(false);
@@ -2063,9 +2222,13 @@ void MainWindow::doNotDisturbCancel()
    ui->comboBox_i2cSpeed->setDisabled(false);
    ui->comboBox_ECC->setDisabled(false);
    ui->comboBox_raw->setDisabled(false);
+   ui->comboBox_onDieEcc->setDisabled(false);
+   ui->actionFT232H_v1_2->setDisabled(false);
+   applyPlatformRestrictions();
 
    hexEdit->blockSignals(false);
    timer->start();
+   updateNandControlVisibility();
 }
 
 void MainWindow::on_actionStop_triggered()
@@ -2074,6 +2237,8 @@ void MainWindow::on_actionStop_triggered()
   hexEdit->setData(chipData);
   ui->crcEdit->setText(getCRC32(chipData));
   isHalted = true;
+  if (nandReadIncomplete)
+      ui->label_nandInfo->setText(tr("NAND read stopped. Buffer is incomplete; unread bytes are FF."));
   QMessageBox::about(this, tr("Stop"), tr("Operation aborted!"));
   clearCheckboxes();
   return;
@@ -2284,7 +2449,7 @@ void MainWindow::progInit()
 
 void MainWindow::slotTimerAlarm()
 {
-    statusCH341 = ProgDeviceInit(current_programmer, 0, 1);
+    statusCH341 = ProgDeviceInit(current_programmer, 0, getInterfaceSpeed(current_programmer, 0, 1000));
     ch341StatusFlashing();
     ProgDeviceClose(current_programmer);
 }
@@ -2683,17 +2848,19 @@ void MainWindow::receiveNandStatus(uint8_t setParam)
 void MainWindow::on_actionCH341A_B_v1_2_triggered()
 {
     current_programmer = 0;
-    ui->lStatus->setText("CH341A");
+    ui->lStatus->setText("CH341A/B");
     SetItemStatus("comboBox_type", 2, false);
     SetItemStatus("comboBox_vcc", 3, true);
+    applyPlatformRestrictions();
 }
 
 void MainWindow::on_actionCH341A_v1_7_triggered()
 {
     current_programmer = 1;
-    ui->lStatus->setText("CH341A");
+    ui->lStatus->setText("CH341A/B");
     SetItemStatus("comboBox_type", 2, false);
     SetItemStatus("comboBox_vcc", 3, false);
+    applyPlatformRestrictions();
 }
 
 void MainWindow::on_actionCH347T_triggered()
@@ -2722,6 +2889,14 @@ void MainWindow::on_actionFT232H_v1_2_triggered()
 
 void MainWindow::closeEvent(QCloseEvent( *event))
 {
+    if (ui->actionStop->isEnabled())
+    {
+        // A window-close request must not leave a hidden erase/program loop running.
+        // Stop at the next checked block boundary and keep the window for review.
+        event->ignore();
+        on_actionStop_triggered();
+        return;
+    }
     //Storing parameters in ini file
     if (lastDirectory.isEmpty()) lastDirectory = QDir::homePath();
     QString iniPath = QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).filePath("config.ini");
@@ -2786,18 +2961,21 @@ void MainWindow::SetItemStatus(QString comboboxName, int itemNumber, bool setDis
 void MainWindow::on_actionShow_programmer_version_triggered()
 {
     std::shared_ptr<uint8_t[]> buf(new uint8_t[0x12]);
-    statusCH341 = ProgDeviceInit(current_programmer, currentChipType, currentI2CBusSpeed);
+    statusCH341 = ProgDeviceInit(current_programmer, currentChipType,
+        currentChipType == 1 ? currentI2CBusSpeed : getInterfaceSpeed(current_programmer, currentChipType, currentDelay));
     if (statusCH341 == 0)
     {
         getDeviceDescriptor(buf.get(), current_programmer);
         ProgDeviceClose(current_programmer);
         QMessageBox::about(this, tr("Info:"), (tr("Device revision: ") + byteBCDPrint(buf[13], false) + "." + byteBCDPrint(buf[12], true)));
     }
-    else QMessageBox::about(this, tr("Error"), tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!"));
+    else showConnectionError();
 }
 
 void MainWindow::on_actionCheck_erase_triggered()
 {
+    lastOperationSucceeded = false;
+    if (!validateNandOperation(false, false)) return;
     //Verification of data erasure from the chip
     int res = 0;
     uint32_t step, numBlocks;
@@ -2845,9 +3023,15 @@ void MainWindow::on_actionCheck_erase_triggered()
                                 numBlocks = currentChipSize / step;
                              break;
                              case 6:             //NAND 35xx, GD5xx, W25xx
-                                step = currentPageSize;
-                                numBlocks = currentChipSize / step;
-                                nand_ECCEnable(current_programmer);
+                                step = currentPageSize + (nandRaw ? currentECCsize : 0);
+                                numBlocks = currentChipSize / currentPageSize;
+                                if (!prepareNandOperation(tr("Erase check")))
+                                {
+                                    ProgDeviceClose(current_programmer);
+                                    doNotDisturbCancel();
+                                    clearCheckboxes();
+                                    return;
+                                }
                              break;
                              default:
                                 //Unsupport
@@ -2914,12 +3098,19 @@ void MainWindow::on_actionCheck_erase_triggered()
                     // if res=-1 - error, stop
                     if (statusCH341 != 0)
                     {
-                       QMessageBox::about(this, tr("Error"), tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!"));
+                       showConnectionError();
                        doNotDisturbCancel();
-                       break;
+                       ProgDeviceClose(current_programmer);
+                       return;
                     }
                     if (res <= 0)
                     {
+                        if (currentChipType == 6)
+                        {
+                            ui->label_nandInfo->setText(tr("NAND operation failed at block/page %1 (error %2).").arg(curBlock).arg(res));
+                            if (res == NAND_ERROR_ECC_UNCORRECTABLE)
+                                ui->label_nandInfo->setText(ui->label_nandInfo->text() + " " + tr("On-die ECC reported an uncorrectable page."));
+                        }
                         QMessageBox::about(this, tr("Error"), tr("Error reading block ") + QString::number(curBlock));
                         ProgDeviceClose(current_programmer);
                         ui->pushButton->setStyleSheet(grnKeyStyle);
@@ -2971,12 +3162,14 @@ void MainWindow::on_actionCheck_erase_triggered()
              ui->progressBar->setValue(0);
              ui->checkBox_1->setStyleSheet("");
              ProgDeviceClose(current_programmer);
+             lastOperationSucceeded = true;
+             finishNandRead(tr("Erase check complete"));
 
     }
       else
       {
           ch341StatusFlashing();
-          QMessageBox::about(this, tr("Error"), tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!"));
+          showConnectionError();
       }
 }
 
@@ -3019,22 +3212,26 @@ void MainWindow::receiveAddr4(QString addressData)
 
 void MainWindow::on_comboBox_raw_currentIndexChanged(int index)
 {
-    if (index == 0)
+    const bool isNand = ui->comboBox_type->currentData().isValid() &&
+                        ui->comboBox_type->currentData().toInt() == 6;
+    if (isNand && uiReady && hexEdit && (!filled || hexEdit->isModified()) && nandRaw != (index != 0) &&
+            QMessageBox::warning(this, tr("Change dump layout"),
+              tr("Changing main/OOB layout clears the current buffer. Save it first if needed. Continue?"),
+              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
     {
-        nandRaw = false;
-        if (scroll_connect) disconnect(scroll_connect);
-        if (hexEdit) hexEdit->clearUserAreas();
+        const QSignalBlocker blocker(ui->comboBox_raw);
+        ui->comboBox_raw->setCurrentIndex(nandRaw ? 1 : 0);
+        return;
     }
-    else
-    {
-        nandRaw = true;
-        scroll_connect = connect(hexEdit->verticalScrollBar(), &QScrollBar::valueChanged, this, &MainWindow::handleScroll);
-    }
-    on_comboBox_size_currentIndexChanged(0);
+    nandRaw = index != 0;
+    if (isNand && uiReady) on_comboBox_size_currentIndexChanged(0);
+    updateNandControlVisibility();
+    updateNandSelectionInfo();
 }
 
 void MainWindow::handleScroll()
 {
+    if (currentChipType != 6 || !nandRaw || !currentPageSize || !currentECCsize) return;
     if (currentChipSize > 0x3ffffff)
     {
         long posStart = 0, posEnd = 0, i;
@@ -3050,4 +3247,226 @@ void MainWindow::handleScroll()
             }
         }
     }
+}
+
+quint64 MainWindow::nandImageSize() const
+{
+    if (!currentPageSize) return 0;
+    return quint64(currentChipSize / currentPageSize) *
+            (quint64(currentPageSize) + (nandRaw ? currentECCsize : 0));
+}
+
+bool MainWindow::validateNandOperation(bool writing, bool checkBuffer)
+{
+    if (currentChipType != 6) return true;
+    // Capture what the user currently sees, including block-size edits.
+    currentChipSize = ui->comboBox_size->currentData().toUInt();
+    currentPageSize = ui->comboBox_page->currentData().toUInt();
+    currentBlockSize = ui->comboBox_block->currentData().toUInt();
+    currentECCsize = ui->comboBox_ECC->currentData().toUInt() * 64;
+    currentNumBlocks = currentPageSize ? currentChipSize / currentPageSize : 0;
+    defaultSpeed = getInterfaceSpeed(current_programmer, currentChipType, currentDelay);
+    if (!currentChipSize || !currentPageSize || !currentBlockSize ||
+        currentBlockSize % currentPageSize || currentBlockSize / currentPageSize != 64 ||
+        currentChipSize % currentBlockSize ||
+        (nandRaw && !currentECCsize) || nandImageSize() > quint64((std::numeric_limits<int>::max)()))
+    {
+        QMessageBox::warning(this, tr("Error"), tr("Select valid NAND size, page, block and OOB parameters. This build requires 64 pages per block."));
+        return false;
+    }
+    if (writing && nandReadIncomplete)
+    {
+        QMessageBox::warning(this, tr("Incomplete NAND read"),
+            tr("Writing an incomplete NAND read is blocked. Complete a fresh read or explicitly load a complete image first."));
+        return false;
+    }
+    if (writing && nandRaw && ui->comboBox_onDieEcc->currentData().toBool())
+    {
+        QMessageBox::warning(this, tr("Unsupported write combination"),
+            tr("Main + OOB writing requires on-die ECC Off, because ECC On may replace bytes in the supplied OOB. Read and Verify allow all four combinations."));
+        return false;
+    }
+    if (checkBuffer && quint64(hexEdit->data().size()) != nandImageSize())
+    {
+        QMessageBox::warning(this, tr("Buffer size mismatch"),
+            tr("The buffer must contain exactly %1 bytes for the selected main/OOB layout. Reload the correct image before Write or Verify.").arg(nandImageSize()));
+        return false;
+    }
+    return true;
+}
+
+bool MainWindow::prepareNandOperation(const QString &operation)
+{
+    u8 id[3] = {0, 0, 0};
+    u8 readback = 0;
+    const bool eccEnabled = ui->comboBox_onDieEcc->currentData().toBool();
+    int result = nand_read_devid(id, 3, current_programmer);
+    if (result != 0 || id[0] == 0 || id[0] == 0xff)
+    {
+        ui->label_nandInfo->setText(tr("NAND identification failed. Operation stopped."));
+        QMessageBox::warning(this, tr("Error"), ui->label_nandInfo->text());
+        return false;
+    }
+    const bool isW25N01GW = id[0] == 0xef && id[1] == 0xba && id[2] == 0x21;
+    if ((ui->comboBox_name->currentText().startsWith("W25N01GW", Qt::CaseInsensitive) && !isW25N01GW) ||
+        (isW25N01GW && (currentPageSize != 2048 || currentECCsize != 64 ||
+                       currentBlockSize != 131072 || currentChipSize != 134217728)))
+    {
+        ui->label_nandInfo->setText(tr("W25N01GW identification/geometry mismatch. Operation stopped."));
+        QMessageBox::warning(this, tr("Error"), ui->label_nandInfo->text());
+        return false;
+    }
+    nand_set_ecc_status_mode(isW25N01GW ? NAND_ECC_STATUS_W25N01GW : NAND_ECC_STATUS_NONE);
+    nand_reset_ecc_read_status();
+    // W25N01GW always uses buffer reads, including Main-only. Other B0 bits are preserved.
+    result = nand_configure_ecc(current_programmer, eccEnabled, isW25N01GW, &readback);
+    if (result != 0)
+    {
+        ui->label_nandInfo->setText(tr("ECC setup/readback failed (%1). Operation stopped.").arg(result));
+        qWarning().noquote() << ui->label_nandInfo->text();
+        QMessageBox::warning(this, tr("Error"), ui->label_nandInfo->text());
+        return false;
+    }
+    if (isW25N01GW && (readback & 0x40))
+    {
+        ui->label_nandInfo->setText(tr("W25N01GW OTP mode is enabled. Main-array operation stopped; OTP settings were preserved."));
+        QMessageBox::warning(this, tr("Error"), ui->label_nandInfo->text());
+        return false;
+    }
+    nandOperationDescription = tr("%1; %2 bytes; ECC %3; B0 readback 0x%4")
+        .arg(nandRaw ? tr("Main + OOB") : tr("Main only"))
+        .arg(nandImageSize())
+        .arg(eccEnabled ? tr("On (corrected)") : tr("Off (raw)"))
+        .arg(readback, 2, 16, QLatin1Char('0'));
+    if (isW25N01GW) nandOperationDescription += tr("; BUF=1");
+    else nandOperationDescription += tr("; chip-specific ECC status not decoded");
+    ui->label_nandInfo->setText(operation + ": " + nandOperationDescription);
+    qInfo().noquote() << operation << ":" << nandOperationDescription;
+    return true;
+}
+
+void MainWindow::finishNandRead(const QString &operation)
+{
+    if (currentChipType != 6) return;
+    QString summary = operation + ": " + nandOperationDescription;
+    const unsigned int status = nand_get_ecc_read_status();
+    if (status & NAND_ECC_READ_CORRECTED) summary += tr("; corrected page(s) reported");
+    if (status & NAND_ECC_READ_UNCORRECTABLE) summary += tr("; uncorrectable page(s) reported");
+    ui->label_nandInfo->setText(summary);
+    qInfo().noquote() << summary;
+}
+
+void MainWindow::updateNandControlVisibility()
+{
+    const bool isNand = ui->comboBox_type->currentData().isValid() &&
+                        ui->comboBox_type->currentData().toInt() == 6;
+    const bool enabled = isNand && !ui->actionStop->isEnabled();
+    const QList<QWidget *> controls = {ui->label_11, ui->comboBox_ECC,
+        ui->label_12, ui->comboBox_raw, ui->label_onDieEcc,
+        ui->comboBox_onDieEcc, ui->label_nandInfo};
+    for (QWidget *control : controls)
+    {
+        control->setVisible(isNand);
+        control->setEnabled(enabled);
+    }
+    const bool hadOobScrollConnection = bool(scroll_connect);
+    if (scroll_connect)
+    {
+        disconnect(scroll_connect);
+        scroll_connect = QMetaObject::Connection();
+    }
+    if (hexEdit)
+    {
+        if (isNand && nandRaw)
+            scroll_connect = connect(hexEdit->verticalScrollBar(), &QScrollBar::valueChanged,
+                                     this, &MainWindow::handleScroll);
+        else if (hadOobScrollConnection) hexEdit->clearUserAreas();
+    }
+}
+
+void MainWindow::updateNandSelectionInfo()
+{
+    if (!uiReady) return;
+    if (currentChipType != 6) return;
+    const bool enabled = ui->comboBox_onDieEcc->currentData().toBool();
+    ui->label_nandInfo->setText(tr("Selected: %1; %2 bytes; ECC %3. Not yet applied.")
+        .arg(nandRaw ? tr("Main + OOB") : tr("Main only"))
+        .arg(nandImageSize())
+        .arg(enabled ? tr("On (corrected)") : tr("Off (raw)")));
+    if (nandReadIncomplete) ui->label_nandInfo->setText(ui->label_nandInfo->text() + " " + tr("Current buffer is an incomplete NAND read."));
+    if (nandRaw && enabled)
+        ui->label_nandInfo->setText(ui->label_nandInfo->text() + " " + tr("ECC-on OOB is not a raw dump. Write is blocked."));
+}
+
+void MainWindow::on_comboBox_onDieEcc_currentIndexChanged(int index)
+{
+    Q_UNUSED(index);
+    // Selection only. No device I/O and no buffer mutation until an operation starts.
+    updateNandSelectionInfo();
+}
+
+void MainWindow::applyPlatformRestrictions()
+{
+    ui->actionConnection_diagnostics->setVisible(false);
+#ifdef _WIN32
+    ui->actionConnection_diagnostics->setVisible(true);
+    if (current_programmer > 3) current_programmer = 2;
+    ui->actionCH341A_B_v1_2->setEnabled(true);
+    ui->actionCH341A_v1_7->setEnabled(true);
+    ui->actionCH341A_B_v1_2->setText(tr("CH341A/B (SPI)"));
+    ui->actionCH341A_v1_7->setText(tr("CH341A/B v1.7 board (SPI)"));
+    ui->actionCH341A_B_v1_2->setToolTip(tr("CH341A/B share the SPI/parallel USB identity. This selection does not set the physical voltage."));
+    ui->actionCH341A_v1_7->setToolTip(ui->actionCH341A_B_v1_2->toolTip());
+    ui->actionCH341A_B_v1_2->setChecked(current_programmer == 0);
+    ui->actionCH341A_v1_7->setChecked(current_programmer == 1);
+    ui->actionFT232H_v1_2->setEnabled(false);
+    ui->actionShow_programmer_version->setEnabled(false);
+    ui->actionCH347T->setChecked(current_programmer == 2);
+    ui->actionCH347T_v1_1->setChecked(current_programmer == 3);
+    SetItemStatus("comboBox_type", 1, true); // I2C is not included in this Windows port.
+    SetItemStatus("comboBox_type", 2, true); // MicroWire is not included.
+    setWindowTitle(tr("IMSProg ECC/OOB v4 - CH341A/B + CH347T Windows SPI"));
+#endif
+}
+
+void MainWindow::showConnectionError()
+{
+    QString message = tr("Programmer ") + ui->lStatus->text() + tr(" is not connected!");
+#ifdef _WIN32
+    const QString reason = QString::fromUtf8(ch347_windows_last_error());
+    if (!reason.isEmpty()) message += "\n\n" + reason;
+    message += "\n\n" + tr("Open Programmer > Programmer connection diagnostics to copy the selected programmer's driver/device report. Do not change drivers just because connection failed.");
+#endif
+    QMessageBox::warning(this, tr("Error"), message);
+}
+
+void MainWindow::on_actionConnection_diagnostics_triggered()
+{
+#ifdef _WIN32
+    if (ui->actionStop->isEnabled()) return;
+    const bool timerWasActive = timer->isActive();
+    timer->stop();
+    // Backend enumeration only: no SPI setup, NAND command or driver change.
+    if (current_programmer < 2) ch341_windows_diagnose();
+    else ch347_windows_diagnose();
+    const QString report = QString::fromUtf8(ch347_windows_last_report());
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Programmer connection diagnostics"));
+    dialog.resize(780, 520);
+    QVBoxLayout layout(&dialog);
+    QLabel description(tr("Driver/device enumeration only. No SPI commands or chip read/write/erase operations are sent."));
+    description.setWordWrap(true);
+    QPlainTextEdit details;
+    details.setReadOnly(true);
+    details.setPlainText(report);
+    QDialogButtonBox buttons(QDialogButtonBox::Close);
+    QPushButton *copy = buttons.addButton(tr("Copy diagnostics"), QDialogButtonBox::ActionRole);
+    connect(copy, &QPushButton::clicked, [&report] { QApplication::clipboard()->setText(report); });
+    connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout.addWidget(&description);
+    layout.addWidget(&details);
+    layout.addWidget(&buttons);
+    dialog.exec();
+    if (timerWasActive) timer->start();
+#endif
 }

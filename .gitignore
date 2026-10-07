@@ -201,3 +201,11 @@ build/
 # The targets themselves
 IMSProg_editor/IMSProg_editor
 IMSProg_programmer/IMSProg
+
+# Local builds, package outputs, logs, and runtime DLLs
+/build-*/
+/dist-*/
+/tests/*.log
+*.dll
+*.DLL
+*.exe

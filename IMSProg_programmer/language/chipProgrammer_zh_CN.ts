@@ -2181,6 +2181,194 @@ Need: FF</source>
         <source>Operation aborted!</source>
         <translation>操作中止！</translation>
     </message>
+    <message>
+        <source>OOB bytes/page</source>
+        <translation>每页 OOB 字节数</translation>
+    </message>
+    <message>
+        <source>Dump layout</source>
+        <translation>导出布局</translation>
+    </message>
+    <message>
+        <source>On-die ECC</source>
+        <translation>片内 ECC</translation>
+    </message>
+    <message>
+        <source>Main only</source>
+        <translation>仅主数据</translation>
+    </message>
+    <message>
+        <source>Main + OOB</source>
+        <translation>主数据 + OOB</translation>
+    </message>
+    <message>
+        <source>On (corrected read)</source>
+        <translation>开（纠错读取）</translation>
+    </message>
+    <message>
+        <source>Off (raw read)</source>
+        <translation>关（原始读取）</translation>
+    </message>
+    <message>
+        <source>Applied and read back before each NAND operation. Independent of main/OOB layout. ECC-on OOB is not a raw dump.</source>
+        <translation>每次 NAND 操作前应用设置并回读确认，独立于主数据/OOB 布局。ECC 开启时导出的 OOB 不等于原始转储。</translation>
+    </message>
+    <message>
+        <source>Select NAND parameters.</source>
+        <translation>请选择 NAND 参数。</translation>
+    </message>
+    <message>
+        <source>Unsupported write combination</source>
+        <translation>不支持此写入组合</translation>
+    </message>
+    <message>
+        <source>Main + OOB writing requires on-die ECC Off, because ECC On may replace bytes in the supplied OOB. Read and Verify allow all four combinations.</source>
+        <translation>写入主数据 + OOB 必须关闭片内 ECC，以免芯片替换所提供的 OOB 字节。读取和校验支持全部四种组合。</translation>
+    </message>
+    <message>
+        <source>Buffer size mismatch</source>
+        <translation>缓冲区大小不匹配</translation>
+    </message>
+    <message>
+        <source>The buffer must contain exactly %1 bytes for the selected main/OOB layout. Reload the correct image before Write or Verify.</source>
+        <translation>所选主数据/OOB 布局要求缓冲区正好为 %1 字节。写入或校验前请重新载入正确的镜像。</translation>
+    </message>
+    <message>
+        <source>Select valid NAND size, page, block and OOB parameters. This build requires 64 pages per block.</source>
+        <translation>请正确选择 NAND 容量、页、块和 OOB 参数；此版本仅支持每块 64 页。</translation>
+    </message>
+    <message>
+        <source>NAND identification failed. Operation stopped.</source>
+        <translation>NAND 识别失败，操作已停止。</translation>
+    </message>
+    <message>
+        <source>W25N01GW identification/geometry mismatch. Operation stopped.</source>
+        <translation>W25N01GW 芯片 ID 或容量/页/块/OOB 参数不匹配，操作已停止。</translation>
+    </message>
+    <message>
+        <source>ECC setup/readback failed (%1). Operation stopped.</source>
+        <translation>ECC 设置或回读确认失败（%1），操作已停止。</translation>
+    </message>
+    <message>
+        <source>%1; %2 bytes; ECC %3; B0 readback 0x%4</source>
+        <translation>%1；%2 字节；ECC %3；B0 回读 0x%4</translation>
+    </message>
+    <message>
+        <source>On (corrected)</source>
+        <translation>开（纠错）</translation>
+    </message>
+    <message>
+        <source>Off (raw)</source>
+        <translation>关（原始）</translation>
+    </message>
+    <message>
+        <source>; BUF=1</source>
+        <translation>；BUF=1</translation>
+    </message>
+    <message>
+        <source>; chip-specific ECC status not decoded</source>
+        <translation>；未解析该型号专用 ECC 状态</translation>
+    </message>
+    <message>
+        <source>; corrected page(s) reported</source>
+        <translation>；检测到已纠错页</translation>
+    </message>
+    <message>
+        <source>; uncorrectable page(s) reported</source>
+        <translation>；检测到不可纠正页</translation>
+    </message>
+    <message>
+        <source>Selected: %1; %2 bytes; ECC %3. Not yet applied.</source>
+        <translation>选择：%1；%2 字节；ECC %3。尚未应用到芯片。</translation>
+    </message>
+    <message>
+        <source>ECC-on OOB is not a raw dump. Write is blocked.</source>
+        <translation>ECC 开启时 OOB 不是原始转储，此组合禁止写入。</translation>
+    </message>
+    <message>
+        <source>Erase NAND</source>
+        <translation>擦除 NAND</translation>
+    </message>
+    <message>
+        <source>This erases the whole selected NAND chip, including main data and OOB. It is not a selected-block repair. Continue?</source>
+        <translation>此操作将擦除所选 NAND 整片（包括主数据和 OOB），并非仅修复指定块。是否继续？</translation>
+    </message>
+    <message>
+        <source>Bad-block check failed. Erase stopped.</source>
+        <translation>坏块检查失败，擦除已停止。</translation>
+    </message>
+    <message>
+        <source>Change dump layout</source>
+        <translation>更改导出布局</translation>
+    </message>
+    <message>
+        <source>Changing main/OOB layout clears the current buffer. Save it first if needed. Continue?</source>
+        <translation>更改主数据/OOB 布局会清空当前缓冲区，如需保留请先保存。是否继续？</translation>
+    </message>
+    <message>
+        <source>NAND setup failed. No data was programmed.</source>
+        <translation>NAND 初始化失败，未执行数据编程。</translation>
+    </message>
+    <message>
+        <source>Read complete</source>
+        <translation>读取完成</translation>
+    </message>
+    <message>
+        <source>Verify complete</source>
+        <translation>校验完成</translation>
+    </message>
+    <message>
+        <source>Erase check complete</source>
+        <translation>空白检查完成</translation>
+    </message>
+    <message>
+        <source>IMSProg ECC/OOB v4 - CH341A/B + CH347T Windows SPI</source>
+        <translation>IMSProg ECC/OOB v4 - CH341A/B + CH347T Windows SPI</translation>
+    </message>
+    <message>
+        <source>Erase check</source>
+        <translation>空白检查</translation>
+    </message>
+    <message>
+        <source>Incomplete NAND read</source>
+        <translation>NAND 读取未完成</translation>
+    </message>
+    <message>
+        <source>The last NAND read did not complete. Unread bytes are FF. Save this incomplete buffer anyway?</source>
+        <translation>上次 NAND 读取未完成，未读取位置为 FF。仍要保存此不完整缓冲区吗？</translation>
+    </message>
+    <message>
+        <source>Read failed at block %1 (error %2). Buffer is incomplete; unread bytes are FF.</source>
+        <translation>读取在块 %1 失败（错误 %2），缓冲区不完整，未读取位置为 FF。</translation>
+    </message>
+    <message>
+        <source>NAND read stopped. Buffer is incomplete; unread bytes are FF.</source>
+        <translation>NAND 读取已停止，缓冲区不完整，未读取位置为 FF。</translation>
+    </message>
+    <message>
+        <source>Current buffer is an incomplete NAND read.</source>
+        <translation>当前缓冲区是不完整的 NAND 读取。</translation>
+    </message>
+    <message>
+        <source>W25N01GW OTP mode is enabled. Main-array operation stopped; OTP settings were preserved.</source>
+        <translation>W25N01GW 当前处于 OTP 模式，已停止主存储区操作，并保留 OTP 设置。</translation>
+    </message>
+    <message>
+        <source>NAND operation failed at block/page %1 (error %2).</source>
+        <translation>NAND 操作在块/页 %1 失败（错误 %2）。</translation>
+    </message>
+    <message><source>Writing an incomplete NAND read is blocked. Complete a fresh read or explicitly load a complete image first.</source><translation>禁止写入未完成的 NAND 读取。请先成功完成一次新读取，或明确载入完整镜像。</translation></message>
+    <message><source>On-die ECC reported an uncorrectable page.</source><translation>片内 ECC 报告存在不可纠正页。</translation></message>
+    <message><source>Incomplete NAND write</source><translation>NAND 写入不完整</translation></message>
+    <message><source>Bad-block skipping exhausted chip capacity before all source bytes were programmed. Some blocks were already written.</source><translation>跳过坏块后，芯片剩余容量不足，未写完源数据；部分块已经写入。</translation></message>
+    <message><source>Programmer connection diagnostics</source><translation>编程器连接诊断</translation></message>
+    <message><source>Read driver/device information without sending SPI commands.</source><translation>只读取驱动和设备信息，不发送 SPI 命令。</translation></message>
+    <message><source>Open Programmer &gt; Programmer connection diagnostics to copy the selected programmer's driver/device report. Do not change drivers just because connection failed.</source><translation>请打开“编程器 → 编程器连接诊断”，复制当前所选编程器的驱动/设备报告。请勿仅因连接失败就更换驱动。</translation></message>
+    <message><source>Driver/device enumeration only. No SPI commands or chip read/write/erase operations are sent.</source><translation>仅枚举驱动/设备；不发送 SPI 命令，也不执行芯片读取、写入或擦除。</translation></message>
+    <message><source>Copy diagnostics</source><translation>复制诊断</translation></message>
+    <message><source>CH341A/B (SPI)</source><translation>CH341A/B（SPI）</translation></message>
+    <message><source>CH341A/B v1.7 board (SPI)</source><translation>CH341A/B v1.7 板（SPI）</translation></message>
+    <message><source>CH341A/B share the SPI/parallel USB identity. This selection does not set the physical voltage.</source><translation>CH341A/B 共用 SPI/并口 USB 标识；此选择不会改变实际供电和信号电压。</translation></message>
 </context>
 <context>
     <name>SearchDialog</name>

@@ -26,7 +26,7 @@
 #include <QComboBox>
 #include <QStandardItemModel>
 #include <QMetaObject>
-#include <unistd.h>
+#include "platform_sleep.h"
 #include "qhexedit.h"
 #include "dialogsp.h"
 #include "dialogabout.h"
@@ -131,10 +131,12 @@ private slots:
     void SetItemStatus(QString comboboxName, int itemNumber, bool setDisable);
     void on_actionCH347T_v1_1_triggered();
     void on_actionShow_programmer_version_triggered();
+    void on_actionConnection_diagnostics_triggered();
     void on_actionCheck_erase_triggered();
     void on_actionFill_with_code_triggered();
     void on_comboBox_raw_currentIndexChanged(int index);
     void handleScroll();
+    void on_comboBox_onDieEcc_currentIndexChanged(int index);
     void clearCheckboxes();
     void on_actionFT232H_v1_2_triggered();
 
@@ -145,13 +147,25 @@ private:
     QString lastDirectory;
     int statusCH341;
     QByteArray chipData, oldChipData;
-    uint32_t currentChipSize, currentNumBlocks, currentBlockSize, currentPageSize, currentECCsize;
-    uint8_t currentAlgorithm, currentChipType;
+    uint32_t currentChipSize = 0, currentNumBlocks = 0, currentBlockSize = 0, currentPageSize = 0, currentECCsize = 0;
+    uint8_t currentAlgorithm = 0, currentChipType = 0;
     uint16_t currentDelay, defaultSpeed, currentI2CBusSpeed;
-    unsigned int currentAddr4bit;
+    unsigned int currentAddr4bit = 0;
     bool isHalted;
-    bool filled;
-    bool nandRaw;
+    bool filled = true;
+    bool nandRaw = false; // Output includes OOB; this does not select on-die ECC.
+    bool lastOperationSucceeded = false;
+    bool nandReadIncomplete = false;
+    bool uiReady = false;
+    QString nandOperationDescription;
+    quint64 nandImageSize() const;
+    bool validateNandOperation(bool writing, bool checkBuffer);
+    bool prepareNandOperation(const QString &operation);
+    void updateNandSelectionInfo();
+    void updateNandControlVisibility();
+    void finishNandRead(const QString &operation);
+    void applyPlatformRestrictions();
+    void showConnectionError();
     uint8_t numberOfReads;
     QTimer *timer;
     struct chip_data {

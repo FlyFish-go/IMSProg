@@ -19,7 +19,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
+#include "platform_sleep.h"
 #include <stdbool.h>
 #include "spi_controller.h"
 #include "snorcmd_api.h"
@@ -84,7 +84,7 @@ struct {
 } spi_buf;
 
 
-#define udelay(x)			usleep(x)
+#define udelay(x)			imsprog_usleep(x)
 u8 programmerType = 0;
 /*
 struct chip_info {
@@ -530,20 +530,20 @@ int snorUnprotect(u8 progType)
     SPI_CONTROLLER_Write_One_Byte(0x05, programmerType);
     ret = SPI_CONTROLLER_Read_NByte(&buf[0],2,SPI_CONTROLLER_SPEED_SINGLE, programmerType);
     SPI_CONTROLLER_Chip_Select_High(programmerType);
-    usleep(1);
+    imsprog_usleep(1);
 
     buf[0] = buf[0] & 0xc3; //clear bp0 - bp3
 
     SPI_CONTROLLER_Chip_Select_Low(programmerType);
     SPI_CONTROLLER_Write_One_Byte(0x06, programmerType); //Write Enable
     SPI_CONTROLLER_Chip_Select_High(programmerType);
-    usleep(1);
+    imsprog_usleep(1);
 
     SPI_CONTROLLER_Chip_Select_Low(programmerType);
     SPI_CONTROLLER_Write_One_Byte(0x01, programmerType);
     SPI_CONTROLLER_Write_One_Byte(buf[0], programmerType);
     SPI_CONTROLLER_Chip_Select_High(programmerType);
-    usleep(1);
+    imsprog_usleep(1);
 
     return ret;
 }
@@ -962,273 +962,342 @@ int at45_sector_erase(unsigned int sectorNumber,  unsigned int pageSize, u8 prog
 
 }
 
-static int nand_read_main_sr(u8 *val)
+/* NAND APIs return zero on success; negative transport errors are preserved,
+ * and positive controller failure codes become NAND_ERROR_TRANSPORT.
+ * Unlike the older byte-at-a-time paths, each transaction always attempts to
+ * deassert CS, even when asserting CS or sending its command failed. */
+#define NAND_CFG_ECC_ENABLE 0x10
+#define NAND_CFG_BUFFER_MODE 0x08
+#define NAND_SR_BUSY 0x01
+#define NAND_SR_ERASE_FAIL 0x04
+#define NAND_SR_PROGRAM_FAIL 0x08
+
+static int nand_ecc_status_mode = NAND_ECC_STATUS_NONE;
+static int nand_ecc_configuration_valid = 0;
+static int nand_ecc_enabled = 0;
+static u8 nand_ecc_programmer;
+static unsigned int nand_ecc_read_status = NAND_ECC_READ_CLEAN;
+
+static int nand_transfer(u8 *command, u32 command_size, u8 *tx, u32 tx_size,
+                         u8 *rx, u32 rx_size)
 {
-    int retval = 0;
-    unsigned char cmdbuf[4];
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-
-    cmdbuf[0] = 0x0f;
-    cmdbuf[1] = 0xc0;
-    retval = SPI_CONTROLLER_Write_NByte(cmdbuf, 2, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    retval = SPI_CONTROLLER_Read_NByte(val, 1, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    if (retval) {
-        printf("%s: ret: %x\n", __func__, retval);
-        return retval;
-    }
-
-    return 0;
+    int ret = SPI_CONTROLLER_Chip_Select_Low(programmerType);
+    int cleanup;
+    if (!ret)
+        ret = SPI_CONTROLLER_Write_NByte(command, command_size,
+                                         SPI_CONTROLLER_SPEED_SINGLE, programmerType);
+    if (!ret && tx_size)
+        ret = SPI_CONTROLLER_Write_NByte(tx, tx_size,
+                                         SPI_CONTROLLER_SPEED_SINGLE, programmerType);
+    if (!ret && rx_size)
+        ret = SPI_CONTROLLER_Read_NByte(rx, rx_size,
+                                        SPI_CONTROLLER_SPEED_SINGLE, programmerType);
+    cleanup = SPI_CONTROLLER_Chip_Select_High(programmerType);
+    ret = ret ? ret : cleanup;
+    return ret > 0 ? NAND_ERROR_TRANSPORT : ret;
 }
 
+static int nand_read_feature(u8 address, u8 *value)
+{
+    u8 command[] = {0x0f, address};
+    u8 result;
+    int ret = nand_transfer(command, sizeof(command), NULL, 0, &result, 1);
+    if (!ret) *value = result;
+    return ret;
+}
+
+static int nand_write_enable_checked(void)
+{
+    u8 command = OPCODE_WREN;
+    int ret = nand_transfer(&command, 1, NULL, 0, NULL, 0);
+    if (!ret) imsprog_usleep(1);
+    return ret;
+}
+
+static int nand_write_feature(u8 address, u8 value)
+{
+    u8 command[] = {0x1f, address, value};
+    int ret = nand_write_enable_checked();
+    if (ret) return ret;
+    ret = nand_transfer(command, sizeof(command), NULL, 0, NULL, 0);
+    if (!ret) imsprog_usleep(2);
+    return ret;
+}
+
+static int nand_wait_ready_status(int timeout_ms, u8 *status)
+{
+    uint64_t count, polls;
+    u8 sr;
+    int ret;
+    if (timeout_ms < 0) return NAND_ERROR_INVALID_ARGUMENT;
+    /* Poll every 500 microseconds. Include a final sample at the deadline.
+     * The old loop multiplied milliseconds by 1000, waiting 500x too long. */
+    polls = (uint64_t)timeout_ms * 2 + 1;
+    for (count = 0; count < polls; ++count) {
+        ret = nand_read_feature(0xc0, &sr);
+        if (ret) return ret;
+        if (!(sr & NAND_SR_BUSY)) {
+            if (status) *status = sr;
+            return 0;
+        }
+        if (count + 1 < polls) imsprog_usleep(500);
+    }
+    return NAND_ERROR_TIMEOUT;
+}
 
 int nand_wait_ready(int sleep_ms)
 {
-    int count;
-    int sr = 0;
-
-    /* one chip guarantees max 5 msec wait here after page writes,
-     * but potentially three seconds (!) after page erase.
-     */
-    for (count = 0; count < ((sleep_ms + 1) * 1000); count++) {
-        if ((nand_read_main_sr((u8 *)&sr)) < 0) break; //error reading status register
-        if ((sr & 1) == 0) return 0; // BUSY=0
-        udelay(500);
-        /* REVISIT sometimes sleeping would be best */
-    }
-    printf("%s: read_sr fail: %x\n", __func__, sr);
-    return -1;
+    return nand_wait_ready_status(sleep_ms, NULL);
 }
 
+void nand_set_ecc_status_mode(int mode)
+{
+    /* Device identification belongs to the caller. Do not apply this vendor's
+     * ECC encoding to other NANDs, which can have different status layouts. */
+    nand_ecc_status_mode = mode == NAND_ECC_STATUS_W25N01GW
+                         ? mode : NAND_ECC_STATUS_NONE;
+    nand_ecc_configuration_valid = 0;
+    nand_reset_ecc_read_status();
+}
+
+void nand_reset_ecc_read_status(void)
+{
+    nand_ecc_read_status = NAND_ECC_READ_CLEAN;
+}
+
+unsigned int nand_get_ecc_read_status(void)
+{
+    return nand_ecc_read_status;
+}
+
+int nand_configure_ecc(u8 progType, int enable, int require_buffer_mode, u8 *readback)
+{
+    u8 before, desired, after;
+    int ret;
+    programmerType = progType;
+    nand_ecc_configuration_valid = 0;
+    ret = nand_wait_ready(100);
+    if (ret) return ret;
+    ret = nand_read_feature(0xb0, &before);
+    if (ret) return ret;
+    if (readback) *readback = before;
+    desired = enable ? (before | NAND_CFG_ECC_ENABLE)
+                     : (before & (u8)~NAND_CFG_ECC_ENABLE);
+    if (require_buffer_mode) desired |= NAND_CFG_BUFFER_MODE;
+    if (desired != before) {
+        ret = nand_write_feature(0xb0, desired);
+        if (ret) return ret;
+        ret = nand_wait_ready(100);
+        if (ret) return ret;
+    }
+    ret = nand_read_feature(0xb0, &after);
+    if (ret) return ret;
+    if (readback) *readback = after;
+    /* Check the entire register, including every preserved non-target bit. */
+    if (after != desired) return NAND_ERROR_CONFIG_VERIFY;
+    nand_ecc_enabled = (after & NAND_CFG_ECC_ENABLE) != 0;
+    nand_ecc_programmer = progType;
+    nand_ecc_configuration_valid = 1;
+    return 0;
+}
 
 int nand_page_read(unsigned char *buf, unsigned int page_size, uint32_t sector_number)
 {
-    int retval;
-    unsigned char cmdbuf[4];
-    cmdbuf[0] = 0x13;//From sector to chip buffer
-    cmdbuf[1] = (sector_number >> 16) & 0xff;
-    cmdbuf[2] = (sector_number >> 8) & 0xff;
-    cmdbuf[3] = sector_number & 0xff;
-    nand_wait_ready(100);
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_NByte(cmdbuf, 4, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    nand_wait_ready(100);
-    cmdbuf[0] = 0x03;//Reading from buffer
-    cmdbuf[1] = 0x00;
-    cmdbuf[2] = 0x00;
-    cmdbuf[3] = 0x00;
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_NByte(cmdbuf, 4, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    retval = SPI_CONTROLLER_Read_NByte(buf, page_size, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    return retval;
+    u8 command[] = {0x13, (u8)(sector_number >> 16),
+                   (u8)(sector_number >> 8), (u8)sector_number};
+    u8 sr;
+    int ret;
+    if (!buf || !page_size || sector_number > 0xffffffu)
+        return NAND_ERROR_INVALID_ARGUMENT;
+    ret = nand_wait_ready(100);
+    if (ret) return ret;
+    ret = nand_transfer(command, sizeof(command), NULL, 0, NULL, 0);
+    if (ret) return ret;
+    ret = nand_wait_ready_status(100, &sr);
+    if (ret) return ret;
+    if (nand_ecc_status_mode == NAND_ECC_STATUS_W25N01GW &&
+        nand_ecc_configuration_valid && nand_ecc_programmer == programmerType &&
+        nand_ecc_enabled) {
+        /* W25N01GW datasheet, sections 7.3.2 and 8.2.14: in BUF mode
+         * 00 = clean, 01 = corrected, 10 = uncorrectable. Treat unexpected
+         * 11 conservatively as uncorrectable too, never as clean data. */
+        if ((sr & 0x30) >= 0x20) {
+            nand_ecc_read_status |= NAND_ECC_READ_UNCORRECTABLE;
+            return NAND_ERROR_ECC_UNCORRECTABLE;
+        }
+        if ((sr & 0x30) == 0x10)
+            nand_ecc_read_status |= NAND_ECC_READ_CORRECTED;
+    }
+    command[0] = 0x03;
+    command[1] = command[2] = command[3] = 0;
+    return nand_transfer(command, sizeof(command), NULL, 0, buf, page_size);
 }
 
-int nand_read_devid(u8 *rxbuf, int n_rx, uint8_t progType)
+int nand_read_devid(u8 *rxbuf, int n_rx, u8 progType)
 {
-    int retval = 0;
+    u8 command[] = {OPCODE_RDID, 0x00};
     programmerType = progType;
-
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(OPCODE_RDID, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0x00, programmerType);
-    retval = SPI_CONTROLLER_Read_NByte(rxbuf, n_rx, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    if (retval) {
-        printf("%s: ret: %x\n", __func__, retval);
-        return retval;
-    }
-
-    return 0;
+    nand_ecc_configuration_valid = 0;
+    if (!rxbuf || n_rx <= 0) return NAND_ERROR_INVALID_ARGUMENT;
+    return nand_transfer(command, sizeof(command), NULL, 0, rxbuf, (u32)n_rx);
 }
 
 void nand_write_enable(void)
 {
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(OPCODE_WREN, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    usleep(1);
+    /* Compatibility entry point. Core operations use the checked helper. */
+    (void)nand_write_enable_checked();
 }
 
-static inline void nand_write_disable(void)
+int nand_unprotect(u8 progType)
 {
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(OPCODE_WRDI, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    usleep(1);
+    u8 before, desired, after;
+    int ret;
+    programmerType = progType;
+    ret = nand_wait_ready(100);
+    if (ret) return ret;
+    ret = nand_read_feature(0xa0, &before);
+    if (ret) return ret;
+    desired = before & 0x83; /* Preserve WP-E/SRP; clear only BP/TB bits. */
+    if (desired != before) {
+        ret = nand_write_feature(0xa0, desired);
+        if (ret) return ret;
+        ret = nand_wait_ready(100);
+        if (ret) return ret;
+    }
+    ret = nand_read_feature(0xa0, &after);
+    if (ret) return ret;
+    return after == desired ? 0 : NAND_ERROR_CONFIG_VERIFY;
 }
 
 int nand_block_erase(unsigned int sector_number, unsigned int blockSize, u8 progType)
 {
-
-    /* Wait until finished previous write command. */
-    if (nand_wait_ready(950)) return -1;
-    sector_number = sector_number << 6;
-    // PA[15:6] is the address for 128KB blocks (total 1,024 blocks), PA[5:0] is
-    //the address for 2KB pages (total 64 pages for each block)
-    nand_write_enable();
-    nand_unprotect(programmerType);
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0xd8, programmerType);
-    SPI_CONTROLLER_Write_One_Byte((sector_number >> 16) & 0xff, programmerType);
-    SPI_CONTROLLER_Write_One_Byte((sector_number >>  8) & 0xff, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(sector_number & 0xff, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-
-    //nand_write_disable();
-    return 0;
+    u8 command[4], sr;
+    int ret;
+    (void)blockSize; /* Existing NAND geometry uses 64 pages per erase block. */
+    programmerType = progType;
+    if (sector_number > (0xffffffu >> 6)) return NAND_ERROR_INVALID_ARGUMENT;
+    ret = nand_wait_ready(3000);
+    if (ret) return ret;
+    ret = nand_unprotect(progType);
+    if (ret) return ret;
+    /* SET FEATURE can clear WEL on some devices; set it after unprotect. */
+    ret = nand_write_enable_checked();
+    if (ret) return ret;
+    sector_number <<= 6;
+    command[0] = 0xd8;
+    command[1] = (u8)(sector_number >> 16);
+    command[2] = (u8)(sector_number >> 8);
+    command[3] = (u8)sector_number;
+    ret = nand_transfer(command, sizeof(command), NULL, 0, NULL, 0);
+    if (ret) return ret;
+    ret = nand_wait_ready_status(3000, &sr);
+    if (ret) return ret;
+    return (sr & NAND_SR_ERASE_FAIL) ? NAND_ERROR_ERASE_FAIL : 0;
 }
-
 
 int nand_page_write(unsigned char *buf, unsigned int page_size, uint32_t sector_number)
 {
-    int retval;
-    unsigned char cmdbuf[4];
-    if (nand_wait_ready(950)) return -1;
-    nand_write_enable();
-    cmdbuf[0] = 0x02; //From PC to buffer
-    cmdbuf[1] = 0x00;
-    cmdbuf[2] = 0x00;
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    retval = SPI_CONTROLLER_Write_NByte(cmdbuf, 3, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    if (retval == -1) return retval;
-    retval = SPI_CONTROLLER_Write_NByte(buf, page_size, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    if (retval == -1) return retval;
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    nand_wait_ready(200);
-    cmdbuf[0] = 0x10; //From buffer to chip
-    cmdbuf[1] = (sector_number >> 16) & 0xff;
-    cmdbuf[2] = (sector_number >>  8) & 0xff;
-    cmdbuf[3] = sector_number & 0xff;
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    retval = SPI_CONTROLLER_Write_NByte(cmdbuf, 4, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    return retval;
+    u8 command[] = {0x02, 0, 0, 0};
+    u8 sr;
+    int ret;
+    if (!buf || !page_size || sector_number > 0xffffffu)
+        return NAND_ERROR_INVALID_ARGUMENT;
+    ret = nand_wait_ready(950);
+    if (ret) return ret;
+    ret = nand_write_enable_checked();
+    if (ret) return ret;
+    ret = nand_transfer(command, 3, buf, page_size, NULL, 0);
+    if (ret) return ret;
+    ret = nand_wait_ready(200);
+    if (ret) return ret;
+    command[0] = 0x10;
+    command[1] = (u8)(sector_number >> 16);
+    command[2] = (u8)(sector_number >> 8);
+    command[3] = (u8)sector_number;
+    ret = nand_transfer(command, sizeof(command), NULL, 0, NULL, 0);
+    if (ret) return ret;
+    /* Wait for this page, including the final page, and inspect P-FAIL. */
+    ret = nand_wait_ready_status(950, &sr);
+    if (ret) return ret;
+    return (sr & NAND_SR_PROGRAM_FAIL) ? NAND_ERROR_PROGRAM_FAIL : 0;
 }
 
-int nand_block_read(unsigned char *buf, unsigned int page_size, uint32_t block_number, unsigned int pages_per_block, uint8_t progType)
+static int nand_block_arguments_valid(unsigned char *buf, unsigned int page_size,
+                                      u32 block, unsigned int pages)
 {
-    int retval;
+    if (!buf || !page_size || !pages) return 0;
+    if ((uint64_t)block * pages + pages - 1 > 0xffffffu) return 0;
+    return (uint64_t)page_size * pages <= SIZE_MAX;
+}
+
+int nand_block_read(unsigned char *buf, unsigned int page_size, uint32_t block_number,
+                    unsigned int pages_per_block, u8 progType)
+{
     unsigned int i;
-    uint32_t secNumber;
+    int ret;
     programmerType = progType;
-    for (i = 0; i < pages_per_block; i++)
-    {
-        secNumber = block_number * pages_per_block + i;
-        retval = nand_page_read(&buf[i * page_size], page_size, secNumber);
-        if (retval == -1) return retval;
+    if (!nand_block_arguments_valid(buf, page_size, block_number, pages_per_block))
+        return NAND_ERROR_INVALID_ARGUMENT;
+    for (i = 0; i < pages_per_block; ++i) {
+        ret = nand_page_read(buf + (size_t)i * page_size, page_size,
+                             block_number * pages_per_block + i);
+        if (ret) return ret;
     }
     return 0;
 }
 
-int nand_block_write(unsigned char *buf, unsigned int page_size, uint32_t block_number, unsigned int pages_per_block, u8 progType)
+int nand_block_write(unsigned char *buf, unsigned int page_size, uint32_t block_number,
+                     unsigned int pages_per_block, u8 progType)
 {
-    int retval;
     unsigned int i;
-    uint32_t secNumber;
-
+    int ret;
     programmerType = progType;
-
-    for (i = 0; i < pages_per_block; i++)
-    {
-        secNumber = block_number * pages_per_block + i;
-        retval = nand_page_write(&buf[i * page_size], page_size, secNumber);
-        if (retval == -1) return retval;
+    if (!nand_block_arguments_valid(buf, page_size, block_number, pages_per_block))
+        return NAND_ERROR_INVALID_ARGUMENT;
+    for (i = 0; i < pages_per_block; ++i) {
+        ret = nand_page_write(buf + (size_t)i * page_size, page_size,
+                              block_number * pages_per_block + i);
+        if (ret) return ret;
     }
     return 0;
-}
-
-void nand_unprotect(u8 progType)
-{
-    programmerType = progType;
-
-    nand_write_enable();
-    u8 prot_reg;
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0x0f, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0xa0, programmerType);
-    SPI_CONTROLLER_Read_NByte(&prot_reg, 1, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    usleep(1);
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0x1f, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0xa0, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(prot_reg & 0x83, programmerType); //set to 0 bytes 6,5,4,3,2
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
 }
 
 void nand_ECCEnable(u8 progType)
 {
-    u8 val;
-
-    programmerType = progType;
-
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0x0f, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0xb0, programmerType);
-    SPI_CONTROLLER_Read_NByte(&val, 1, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    usleep(2);
-    nand_write_enable();
-    //val = val | 0x10;
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0x1f, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0xb0, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(val | 0x10, programmerType);  //set to 1 byte 4
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    usleep(2);
+    /* Legacy callers must migrate to the checked configuration API. */
+    (void)nand_configure_ecc(progType, 1, 0, NULL);
 }
 
 void nand_ECCDisable(u8 progType)
 {
-    u8 val;
-
-    programmerType = progType;
-
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0x0f, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0xb0, programmerType);
-    SPI_CONTROLLER_Read_NByte(&val, 1, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    usleep(2);
-    nand_write_enable();
-    //val = val | 0x10;
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0x1f, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0xb0, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(val & 0xef, programmerType);  //set to 1 byte 4
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    usleep(2);
+    (void)nand_configure_ecc(progType, 0, 0, NULL);
 }
 
-int nand_checkBadBlock(uint32_t blockNo, uint32_t sectSize, uint32_t blockPerSector, u8 progType)
+int nand_checkBadBlock(uint32_t blockNo, uint32_t sectSize,
+                       uint32_t blockPerSector, u8 progType)
 {
-    int retval; // Return: -1 - error operation, 0 - good block, 1 - bad block
-    unsigned char buf[2];
-    uint32_t sectNo;
-    sectNo = blockNo * blockPerSector;
-
+    u8 command[4], buf[2];
+    uint64_t page = (uint64_t)blockNo * blockPerSector;
+    int ret;
     programmerType = progType;
-
-    nand_wait_ready(950);
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0x13, programmerType);
-    SPI_CONTROLLER_Write_One_Byte((0xff0000 & sectNo) >> 16, programmerType);
-    SPI_CONTROLLER_Write_One_Byte((0x00ff00 & sectNo) >> 8, programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0x0000ff & sectNo, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    //usleep(1000);
-    nand_wait_ready(950);
-    SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    SPI_CONTROLLER_Write_One_Byte(0x03, programmerType);
-    SPI_CONTROLLER_Write_One_Byte((0x00ff00 & sectSize) >> 8, programmerType); //high address
-    SPI_CONTROLLER_Write_One_Byte(0x0000ff & sectSize, programmerType); //low address
-    SPI_CONTROLLER_Write_One_Byte(0x00, programmerType); //dymmy byte
-    retval = SPI_CONTROLLER_Read_NByte(buf,2,SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-    SPI_CONTROLLER_Chip_Select_High(programmerType);
-    if (retval == -1) return retval;
-    if (buf[0] == 0xff) return 0;
-    else return 1;
+    /* Preserve this legacy API's 0=good, 1=bad, -1=error convention. */
+    if (!blockPerSector || !sectSize || sectSize > 0xfffeu || page > 0xffffffu)
+        return -1;
+    ret = nand_wait_ready(950);
+    if (ret) return -1;
+    command[0] = 0x13;
+    command[1] = (u8)(page >> 16);
+    command[2] = (u8)(page >> 8);
+    command[3] = (u8)page;
+    ret = nand_transfer(command, sizeof(command), NULL, 0, NULL, 0);
+    if (ret) return -1;
+    ret = nand_wait_ready(950);
+    if (ret) return -1;
+    command[0] = 0x03;
+    command[1] = (u8)(sectSize >> 8);
+    command[2] = (u8)sectSize;
+    command[3] = 0;
+    ret = nand_transfer(command, sizeof(command), NULL, 0, buf, sizeof(buf));
+    if (ret) return -1;
+    return buf[0] == 0xff ? 0 : 1;
 }

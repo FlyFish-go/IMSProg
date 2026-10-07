@@ -21,7 +21,9 @@
 
 #pragma once
 #include <stdint.h>
+#ifndef IMSPROG_WINDOWS_CH347_ONLY
 #include <libusb.h>
+#endif
 
 #define ch341_BULK_WRITE_ENDPOINT         0x02        /* bEndpointAddress 0x02  EP 2 OUT (Bulk) */
 #define ch341_BULK_READ_ENDPOINT          0x82        /* bEndpointAddress 0x82  EP 2 IN  (Bulk) */

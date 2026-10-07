@@ -1,0 +1,72 @@
+name: Windows build and hardware-free regressions
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libusb-1.0-0-dev libftdi1-dev qtbase5-dev qttools5-dev pkgconf udev
+      - name: Protocol and backend regressions
+        run: |
+          sh tests/run_nand_fake_spi_tests.sh
+          sh tests/run_ch341_spi_tests.sh
+          sh tests/run_ch341_async_tests.sh
+          sh tests/run_ch347_transport_tests.sh
+          sh tests/run_usb_descriptor_tests.sh
+          sh tests/run_windows_backend_tests.sh
+          python3 tests/ui_windows_conformance.py
+      - name: Address and undefined-behavior sanitizers
+        env:
+          SANITIZE: '1'
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          sh tests/run_nand_fake_spi_tests.sh
+          sh tests/run_ch341_spi_tests.sh
+          sh tests/run_ch341_async_tests.sh
+          sh tests/run_windows_backend_tests.sh
+      - name: Build native Qt application and test common UI
+        run: |
+          cmake -S . -B build-linux -G Ninja -DFORCE_QT5=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-linux --parallel 2
+          sh tests/ui_run_tests.sh build-linux
+
+  windows-build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-tools
+      - name: Build Windows x64 application
+        run: |
+          cmake -S . -B build-windows -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$MINGW_PREFIX"
+          cmake --build build-windows --parallel 2
+      - name: MinGW-compatible hardware-free regressions
+        run: |
+          CC=gcc sh tests/run_ch341_async_tests.sh
+          CC=gcc sh tests/run_usb_descriptor_tests.sh
+      # Build validation only. No DLL, EXE or binary bundle is published.

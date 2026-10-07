@@ -1,3 +1,4 @@
+#include "platform_sleep.h"
 /*
  * Copyright (C) 2025 Mikhail Medvedev <e-ink-reader@yandex.ru>
  *
@@ -137,7 +138,7 @@ void DialogSecurity::on_toolButton_read_clicked()
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(curCommands.ENSO, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
            }
 
            if (curSettings.a4byte == 1)
@@ -145,7 +146,7 @@ void DialogSecurity::on_toolButton_read_clicked()
                SPI_CONTROLLER_Chip_Select_Low(programmerType);
                SPI_CONTROLLER_Write_One_Byte(0xb7, programmerType); // Enter 4 byte mode
                SPI_CONTROLLER_Chip_Select_High(programmerType);
-               usleep(1);
+               imsprog_usleep(1);
            }
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
@@ -157,7 +158,7 @@ void DialogSecurity::on_toolButton_read_clicked()
            if (curCommands.DUMRD == 1) SPI_CONTROLLER_Write_One_Byte(0x00, programmerType);  //Dummy byte
            retval = SPI_CONTROLLER_Read_NByte(buf.get(), curSettings.size * 64, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            if (curSettings.algType == 1)
            {
@@ -165,7 +166,7 @@ void DialogSecurity::on_toolButton_read_clicked()
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(curCommands.EXSO, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
            }
 
            if (retval)
@@ -215,7 +216,7 @@ void DialogSecurity::on_toolButton_write_clicked()
                SPI_CONTROLLER_Chip_Select_Low(programmerType);
                SPI_CONTROLLER_Write_One_Byte(0xb7, programmerType); // Enter 4 byte mode
                SPI_CONTROLLER_Chip_Select_High(programmerType);
-               usleep(1);
+               imsprog_usleep(1);
            }
 
            regData = hexEdit->data();
@@ -233,13 +234,13 @@ void DialogSecurity::on_toolButton_write_clicked()
                SPI_CONTROLLER_Chip_Select_Low(programmerType);
                SPI_CONTROLLER_Write_One_Byte(curCommands.ENSO, programmerType);
                SPI_CONTROLLER_Chip_Select_High(programmerType);
-               usleep(1);
+               imsprog_usleep(1);
                }
 
                SPI_CONTROLLER_Chip_Select_Low(programmerType);
                SPI_CONTROLLER_Write_One_Byte(0x06, programmerType);  // Write Enable
                SPI_CONTROLLER_Chip_Select_High(programmerType);
-               usleep(1);
+               imsprog_usleep(1);
 
                SPI_CONTROLLER_Chip_Select_Low(programmerType);
                SPI_CONTROLLER_Write_One_Byte(curCommands.WRSCUR, programmerType);  // Write SR command
@@ -250,7 +251,7 @@ void DialogSecurity::on_toolButton_write_clicked()
                if (curSettings.size < 4) retval = SPI_CONTROLLER_Write_NByte(buf.get(), curSettings.size * 64, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
                else retval = SPI_CONTROLLER_Write_NByte(buf.get(), 256, SPI_CONTROLLER_SPEED_SINGLE, programmerType);
                SPI_CONTROLLER_Chip_Select_High(programmerType);
-               usleep(1);
+               imsprog_usleep(1);
 
               if (retval)
               {
@@ -267,7 +268,7 @@ void DialogSecurity::on_toolButton_write_clicked()
               a15a08++;
               for (i = 0; i < 256; i++)
               {
-                  usleep(3);
+                  imsprog_usleep(3);
                   SPI_CONTROLLER_Chip_Select_Low(programmerType);  // waiting for WIP bit is set to zero
                   SPI_CONTROLLER_Write_One_Byte(0x05, programmerType);
                   SPI_CONTROLLER_Read_NByte(&sr,1,SPI_CONTROLLER_SPEED_SINGLE, programmerType);
@@ -281,13 +282,13 @@ void DialogSecurity::on_toolButton_write_clicked()
               SPI_CONTROLLER_Chip_Select_Low(programmerType);
               SPI_CONTROLLER_Write_One_Byte(curCommands.EXSO, programmerType);
               SPI_CONTROLLER_Chip_Select_High(programmerType);
-              usleep(1);
+              imsprog_usleep(1);
               }
 
               SPI_CONTROLLER_Chip_Select_Low(programmerType);
               SPI_CONTROLLER_Write_One_Byte(0x04, programmerType);  // Write Disable
               SPI_CONTROLLER_Chip_Select_High(programmerType);
-              usleep(1);
+              imsprog_usleep(1);
           }
 
         }
@@ -319,20 +320,20 @@ void DialogSecurity::on_toolButton_erase_clicked()
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(curCommands.ENSO, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
            }
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x06, programmerType);  // Write Enable
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            if (curSettings.a4byte == 1)
            {
                SPI_CONTROLLER_Chip_Select_Low(programmerType);
                SPI_CONTROLLER_Write_One_Byte(0xb7, programmerType); // Enter 4 byte mode
                SPI_CONTROLLER_Chip_Select_High(programmerType);
-               usleep(1);
+               imsprog_usleep(1);
            }
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
@@ -346,7 +347,7 @@ void DialogSecurity::on_toolButton_erase_clicked()
            else SPI_CONTROLLER_Write_One_Byte(0x00, programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x00, programmerType);  //A7...A0
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
 
            if (curSettings.algType == 1)
            {
@@ -354,13 +355,13 @@ void DialogSecurity::on_toolButton_erase_clicked()
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(curCommands.EXSO, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
            }
 
            SPI_CONTROLLER_Chip_Select_Low(programmerType);
            SPI_CONTROLLER_Write_One_Byte(0x04, programmerType);  // Write Disable
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
     }
        else QMessageBox::about(this, tr("Error"), tr("Programmer ") + programmerName + tr(" is not connected!"));
         ProgDeviceClose(programmerType);

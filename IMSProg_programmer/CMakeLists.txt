@@ -9,9 +9,24 @@ set(CMAKE_AUTOUIC ON)
 
 project(IMSProg LANGUAGES C CXX)
 
-include(FindPkgConfig)
-pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
-pkg_check_modules(LIBFTDI REQUIRED IMPORTED_TARGET libftdi1)
+if(WIN32)
+    # Windows SPI port for explicit CH341A/B and CH347T families.
+    # Existing libusb-compatible or WCH drivers are used without replacement.
+    # FTDI, I2C and Microwire remain fail-closed stubs on Windows.
+    set(IMSPROG_BACKEND_SOURCES
+        windows/ch347_win32.c
+        windows/ch341_spi_win32.c
+        windows/ch341_async.c
+        windows/ch347_usb_select.c
+        windows/unsupported_backends.c)
+else()
+    include(FindPkgConfig)
+    pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
+    pkg_check_modules(LIBFTDI REQUIRED IMPORTED_TARGET libftdi1)
+    set(IMSPROG_BACKEND_SOURCES
+        ft232all.cpp bitbang_microwire.c ch341a_gpio.c ch341a_spi.c
+        ch34x_i2c.c mw_eeprom.c)
+endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(CMAKE_INSTALL_DO_STRIP FALSE)
@@ -41,7 +56,7 @@ if (CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
               message(STATUS "Found Qt at /usr/local/opt/qt")
           endif()
       endif()
-  else()
+  elseif(NOT WIN32)
       set(CMAKE_INSTALL_PREFIX "/usr" CACHE PATH "The default install prefix" FORCE)
   endif()
 endif()
@@ -108,7 +123,7 @@ else()
     endif()
 endif()
 
-if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+if(UNIX AND NOT APPLE)
 set(UDEVDIR "/usr/lib/udev")
 if (CMAKE_INSTALL_PREFIX STREQUAL "/usr" OR CMAKE_INSTALL_PREFIX STREQUAL "/" AND NOT CMAKE_CROSSCOMPILING)
 # /usr and / install prefixes at treated by cmake GNUInstallDirs as
@@ -154,6 +169,7 @@ endif()
 add_custom_target(translations DEPENDS ${QM_FILES})
 
 add_executable(${PROJECT_NAME}
+    ${IMSPROG_BACKEND_SOURCES}
     qhexedit2/src/chunks.cpp
     qhexedit2/src/color_manager.cpp
     qhexedit2/src/commands.cpp
@@ -171,16 +187,10 @@ add_executable(${PROJECT_NAME}
     dialogsr.cpp
     dialogsetaddr.cpp
     dialogfill.cpp
-    ft232all.cpp
     hexutility.cpp
     searchdialog.cpp
     dialoginfo.cpp
-    bitbang_microwire.c
-    ch341a_gpio.c
-    ch341a_spi.c
-    ch34x_i2c.c
     ch347.c
-    mw_eeprom.c
     spi_controller.c
     spi_nor_flash.c
     timer.c
@@ -239,27 +249,29 @@ add_executable(${PROJECT_NAME}
 target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/qhexedit2/src/")
 
-if (QT_VERSION_MAJOR EQUAL 5)
-    target_link_libraries(${PROJECT_NAME}
-        Qt5::Core
-        Qt5::Widgets
-        PkgConfig::LIBUSB
-        PkgConfig::LIBFTDI
-    )
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets)
+if(WIN32)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        IMSPROG_WINDOWS_CH347_ONLY WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0602)
+    set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE TRUE)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/database/IMSProg.Dat"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/IMSProg.Dat")
 else()
-    target_link_libraries(${PROJECT_NAME} PRIVATE
-        Qt::Core
-        Qt::Widgets
-        PkgConfig::LIBUSB
-        PkgConfig::LIBFTDI
-    )
+    target_link_libraries(${PROJECT_NAME} PRIVATE PkgConfig::LIBUSB PkgConfig::LIBFTDI)
 endif()
 
+if(WIN32)
+    install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION .)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/database/IMSProg.Dat" ${QM_FILES} DESTINATION .)
+else()
 install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/img/IMSProg64.png" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/pixmaps")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/database/IMSProg.Dat" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/imsprog")
 
-if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+if(UNIX AND NOT APPLE)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/other/IMSProg.desktop" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
 endif()
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
@@ -273,3 +285,5 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/other/index.html" DESTINATION "${CMAK
 install(DIRECTORY "${PROJECT_ROOT}/img/"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/imsprog/html")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/other/io.github.bigbigmdm.imsprog.metainfo.xml" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/metainfo")
+
+endif()

@@ -66,6 +66,10 @@ static void initPaths()
     QDir binDir(QCoreApplication::applicationDirPath());
     QString binRelPath = QDir::cleanPath(binDir.absoluteFilePath("../share/" + QCoreApplication::applicationName()));
     allPaths.insert(1, binRelPath);
+#ifdef Q_OS_WIN
+    // Portable Windows distribution keeps its database and translations here.
+    allPaths.insert(1, binDir.absolutePath());
+#endif
 
     QDir userAppDataLocation(allPaths.value(0));
     if (!userAppDataLocation.exists()) {
@@ -93,6 +97,19 @@ int main(int argc, char *argv[])
 
     MainWindow w;
     w.show();
+#ifdef Q_OS_WIN
+    const QDir applicationDir(QCoreApplication::applicationDirPath());
+    const bool hasLibusb = QFile::exists(applicationDir.filePath(QStringLiteral("libusb-1.0.dll"))) &&
+                           QFile::exists(applicationDir.filePath(QStringLiteral("libusbK.dll")));
+    if (!hasLibusb) {
+        QMessageBox::warning(&w, QObject::tr("Programmer runtime libraries missing"),
+            QObject::tr("The libusb-1.0.dll / libusbK.dll runtime pair is missing beside IMSProg.exe.\n"
+                        "Extract the complete v4 package, including its DLL files.\n"
+                        "This application uses the existing driver and does not install or replace drivers.\n"
+                        "You can still open and inspect files without a programmer.\n"
+                        "Use Programmer > Programmer connection diagnostics for a detailed report."));
+    }
+#endif
 
     return a.exec();
 }

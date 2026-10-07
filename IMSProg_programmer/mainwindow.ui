@@ -493,7 +493,7 @@ QPushButton::pressed{background-color: rgb(115, 210, 22);}</string>
          <item row="9" column="0">
           <widget class="QLabel" name="label_11">
            <property name="text">
-            <string>ECC size</string>
+            <string>OOB bytes/page</string>
            </property>
           </widget>
          </item>
@@ -525,7 +525,7 @@ QPushButton::pressed{background-color: rgb(115, 210, 22);}</string>
            </property>
           </widget>
          </item>
-         <item row="11" column="0">
+         <item row="13" column="0">
           <spacer name="verticalSpacer_2">
            <property name="orientation">
             <enum>Qt::Vertical</enum>
@@ -538,7 +538,7 @@ QPushButton::pressed{background-color: rgb(115, 210, 22);}</string>
            </property>
           </spacer>
          </item>
-         <item row="11" column="1">
+         <item row="13" column="1">
           <spacer name="verticalSpacer_3">
            <property name="orientation">
             <enum>Qt::Vertical</enum>
@@ -551,7 +551,7 @@ QPushButton::pressed{background-color: rgb(115, 210, 22);}</string>
            </property>
           </spacer>
          </item>
-         <item row="12" column="0">
+         <item row="14" column="0">
           <widget class="QPushButton" name="pushButton_2">
            <property name="minimumSize">
             <size>
@@ -573,7 +573,7 @@ QPushButton::pressed{background-color: rgb(115, 210, 22);}</string>
            </property>
           </widget>
          </item>
-         <item row="12" column="1">
+         <item row="14" column="1">
           <layout class="QHBoxLayout" name="horizontalLayout">
            <item>
             <spacer name="horizontalSpacer">
@@ -612,10 +612,27 @@ QPushButton::pressed{background-color: rgb(115, 210, 22);}</string>
            </item>
           </layout>
          </item>
+         <item row="11" column="0">
+          <widget class="QLabel" name="label_onDieEcc">
+           <property name="text"><string>On-die ECC</string></property>
+          </widget>
+         </item>
+         <item row="11" column="1">
+          <widget class="QComboBox" name="comboBox_onDieEcc">
+           <property name="toolTip"><string>Applied and read back before each NAND operation. Independent of main/OOB layout. ECC-on OOB is not a raw dump.</string></property>
+          </widget>
+         </item>
+         <item row="12" column="0" colspan="2">
+          <widget class="QLabel" name="label_nandInfo">
+           <property name="text"><string>Select NAND parameters.</string></property>
+           <property name="wordWrap"><bool>true</bool></property>
+           <property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property>
+          </widget>
+         </item>
          <item row="10" column="0">
           <widget class="QLabel" name="label_12">
            <property name="text">
-            <string>Operations</string>
+            <string>Dump layout</string>
            </property>
           </widget>
          </item>
@@ -1103,6 +1120,7 @@ QPushButton::pressed{background-color: rgb(115, 210, 22);}</string>
     <addaction name="actionFT232H_v1_2"/>
     <addaction name="separator"/>
     <addaction name="actionShow_programmer_version"/>
+    <addaction name="actionConnection_diagnostics"/>
    </widget>
    <addaction name="menuFile"/>
    <addaction name="menuProgrammer"/>
@@ -1486,6 +1504,10 @@ QPushButton::pressed{background-color: rgb(115, 210, 22);}</string>
    <property name="text">
     <string>Show programmer version</string>
    </property>
+  </action>
+  <action name="actionConnection_diagnostics">
+   <property name="text"><string>Programmer connection diagnostics</string></property>
+   <property name="toolTip"><string>Read driver/device information without sending SPI commands.</string></property>
   </action>
   <action name="actionCheck_erase">
    <property name="icon">

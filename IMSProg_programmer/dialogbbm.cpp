@@ -78,6 +78,7 @@ void DialogBBM::on_pushButton_clicked()
             ui->progressBar->setValue(i);
             if (retval == -1)
                {
+                  ProgDeviceClose(programmerType);
                   QMessageBox::about(this, tr("Error"), tr("Error reading chip!"));
                   return;
                }
@@ -127,10 +128,17 @@ void DialogBBM::on_pushButton_2_clicked()
     stCH341 = ProgDeviceInit(programmerType, 6, 15000); // 15MHz
     if (stCH341 == 0)
     {
-        SPI_CONTROLLER_Chip_Select_Low(programmerType);
-        SPI_CONTROLLER_Write_One_Byte(0xa5, programmerType);
-        retval = SPI_CONTROLLER_Read_NByte(buf.get(),1,SPI_CONTROLLER_SPEED_SINGLE, programmerType);
-        retval = SPI_CONTROLLER_Read_NByte(buf.get(),256,SPI_CONTROLLER_SPEED_SINGLE, programmerType);
+        retval = SPI_CONTROLLER_Chip_Select_Low(programmerType);
+        if (!retval) retval = SPI_CONTROLLER_Write_One_Byte(0xa5, programmerType);
+        if (!retval) retval = SPI_CONTROLLER_Read_NByte(buf.get(),1,SPI_CONTROLLER_SPEED_SINGLE, programmerType);
+        if (!retval) retval = SPI_CONTROLLER_Read_NByte(buf.get(),256,SPI_CONTROLLER_SPEED_SINGLE, programmerType);
+        const int cleanup = SPI_CONTROLLER_Chip_Select_High(programmerType);
+        if (retval || cleanup)
+        {
+            ProgDeviceClose(programmerType);
+            QMessageBox::warning(this, tr("Error"), tr("Error reading chip!"));
+            return;
+        }
         if ((buf[0] != 0xff) && (buf[1] != 0xff))
         {
             ui->tableWidgetBBM->setShowGrid(true);
@@ -150,7 +158,7 @@ void DialogBBM::on_pushButton_2_clicked()
                 ui->tableWidgetBBM->setItem(i, 1, new QTableWidgetItem(numBlock));
                 numBlock = bytePrint(buf[i * 4 + 2]) + bytePrint(buf[i * 4 + 3]);
                 ui->tableWidgetBBM->setItem(i, 2, new QTableWidgetItem(numBlock));
-                stringResult = (buf[i * 4] & 0x3f) >> 6;
+                stringResult = (buf[i * 4] & 0xc0) >> 6;
                 if (stringResult == 0x00) ui->tableWidgetBBM->setItem(i, 3, new QTableWidgetItem(tr("Not used")));
                 if (stringResult == 0x02) ui->tableWidgetBBM->setItem(i, 3, new QTableWidgetItem(tr("Active, valid")));
                 if (stringResult == 0x03) ui->tableWidgetBBM->setItem(i, 3, new QTableWidgetItem(tr("Active, not valid")));

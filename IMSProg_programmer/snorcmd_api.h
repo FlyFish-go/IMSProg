@@ -38,13 +38,39 @@ int at45_write_param(unsigned char *buf, unsigned long from, unsigned long len, 
 int at45_full_erase(u8 progType);
 int at45_sector_erase(unsigned int sectorNumber, unsigned int pageSize, u8 progType);
 int at45_read_sr(u8 *val);
+/* NAND operations return 0 on success, otherwise a negative transport error or one
+ * of these errors (positive controller failures become NAND_ERROR_TRANSPORT).
+ * Exception: nand_checkBadBlock returns 0/1/-1. */
+#define NAND_ERROR_CONFIG_VERIFY (-1001)
+#define NAND_ERROR_ECC_UNCORRECTABLE (-1002)
+#define NAND_ERROR_PROGRAM_FAIL (-1003)
+#define NAND_ERROR_ERASE_FAIL (-1004)
+#define NAND_ERROR_TIMEOUT (-1005)
+#define NAND_ERROR_INVALID_ARGUMENT (-1006)
+#define NAND_ERROR_TRANSPORT (-1007)
+#define NAND_ECC_STATUS_NONE 0
+#define NAND_ECC_STATUS_W25N01GW 1
+#define NAND_ECC_READ_CLEAN 0u
+#define NAND_ECC_READ_CORRECTED 1u
+#define NAND_ECC_READ_UNCORRECTABLE 2u
+/* Set mode only after identifying the physical device. This invalidates cached
+ * ECC configuration; call nand_configure_ecc afterwards for each operation.
+ * These APIs share the existing single-programmer global state; not thread-safe. */
+void nand_set_ecc_status_mode(int mode);
+/* Reset before a whole read/verify, not between blocks. Get returns ORed flags. */
+void nand_reset_ecc_read_status(void);
+unsigned int nand_get_ecc_read_status(void);
+/* Change B0 bit 4 only; if required for a known Winbond device also set BUF bit 3.
+ * Preserve and verify all other bits. readback may be NULL; on mismatch it holds
+ * the actual B0 value. Never call this implicitly from a read or verify helper. */
+int nand_configure_ecc(u8 progType, int enable, int require_buffer_mode, u8 *readback);
 int nand_page_read(unsigned char *buf, unsigned int sector_size, u32 sector_number);
 int nand_block_read(unsigned char *buf, unsigned int page_size, u32 block_number, unsigned int pages_per_block, u8 progType);
 int nand_wait_ready(int sleep_ms);
 int nand_read_devid(u8 *rxbuf, int n_rx, u8 progType);
 int nand_block_erase(unsigned int sector_number, unsigned int blockSize, u8 progType);
 void nand_write_enable(void);
-void nand_unprotect(u8 progType);
+int nand_unprotect(u8 progType);
 int nand_page_write(unsigned char *buf, unsigned int page_size, u32 sector_number);
 int nand_block_write(unsigned char *buf, unsigned int page_size, u32 block_number, unsigned int pages_per_block, u8 progType);
 void nand_ECCEnable(u8 progType);

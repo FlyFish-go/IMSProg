@@ -16,7 +16,7 @@
 #include "ui_dialogsr.h"
 #include <QValidator>
 #include <QRegularExpression>
-#include "unistd.h"
+#include "platform_sleep.h"
 #include <QDebug>
 
 DialogSR::DialogSR(QWidget *parent) :
@@ -50,7 +50,7 @@ void DialogSR::on_pushButton_read_clicked()
            else SPI_CONTROLLER_Write_One_Byte(0xd7, programmerType);
            retval = SPI_CONTROLLER_Read_NByte(buf,1,SPI_CONTROLLER_SPEED_SINGLE, programmerType);
            SPI_CONTROLLER_Chip_Select_High(programmerType);
-           usleep(1);
+           imsprog_usleep(1);
            if (retval)
               {
                  QMessageBox::about(this, tr("Error"), tr("Error reading register!"));
@@ -92,18 +92,18 @@ void DialogSR::on_pushButton_write_clicked()
                SPI_CONTROLLER_Chip_Select_Low(programmerType);
                SPI_CONTROLLER_Write_One_Byte(0x06, programmerType);
                SPI_CONTROLLER_Chip_Select_High(programmerType);
-               usleep(1);
+               imsprog_usleep(1);
 
                SPI_CONTROLLER_Chip_Select_Low(programmerType);
                SPI_CONTROLLER_Write_One_Byte(0x01, programmerType);
                SPI_CONTROLLER_Write_One_Byte(r0, programmerType);
                SPI_CONTROLLER_Chip_Select_High(programmerType);
-               usleep(1);
+               imsprog_usleep(1);
 
                SPI_CONTROLLER_Chip_Select_Low(programmerType);
                SPI_CONTROLLER_Write_One_Byte(0x04, programmerType);
                SPI_CONTROLLER_Chip_Select_High(programmerType);
-               usleep(1);
+               imsprog_usleep(1);
 
            }
            else QMessageBox::about(this, tr("Error"), tr("Before writing the register, please press the `Read` button!"));

@@ -17,13 +17,31 @@
 #error You need to convert every USB communications to little endian before this library would work.
 #endif
 
+#ifdef _WIN32
+#include "windows/ch347_win32.h"
+static int ch347_bulk_transfer(struct ch347_priv *p, unsigned char endpoint,
+                               unsigned char *data, int length,
+                               int *transferred, unsigned int timeout)
+{
+    return ch347_windows_transfer(p, endpoint, data, length, transferred, timeout);
+}
+#else
+static int ch347_bulk_transfer(struct ch347_priv *p, unsigned char endpoint,
+                               unsigned char *data, int length,
+                               int *transferred, unsigned int timeout)
+{
+    if (!p || !p->handle) return -ENODEV;
+    return libusb_bulk_transfer(p->handle, endpoint, data, length, transferred, timeout);
+}
+#endif
+
 struct ch347_priv *priv = NULL;
 
 int ch347_spi_write_packet(struct ch347_priv *priv, uint8_t cmd, const void *tx, int len) {
     uint8_t *ptr;
     int cur_len;
     int err, transferred;
-    if (len > CH347_SPI_MAX_TRX)
+    if (!priv || len < 0 || (len && !tx) || len > CH347_SPI_MAX_TRX)
         return -EINVAL;
 
     priv->tmpbuf[0] = cmd;
@@ -33,17 +51,19 @@ int ch347_spi_write_packet(struct ch347_priv *priv, uint8_t cmd, const void *tx,
     if (len < cur_len)
         cur_len = len;
     memcpy(priv->tmpbuf + 3, tx, cur_len);
-    err = libusb_bulk_transfer(priv->handle, CH347_EPOUT, priv->tmpbuf, cur_len + 3, &transferred, 1000);
+    err = ch347_bulk_transfer(priv, CH347_EPOUT, priv->tmpbuf, cur_len + 3, &transferred, 1000);
+    if (!err && transferred != cur_len + 3) err = -EIO;
     if (err) {
-        fprintf(stderr, "ch347: libusb: failed to send packet: %d\n", err);
+        fprintf(stderr, "ch347: transport: failed to send packet: %d\n", err);
         return err;
     }
     if (cur_len < len) {
         /* This discards the const qualifier. However, libusb won't be writing to it. */
         ptr = (uint8_t *) (tx + cur_len);
-        err = libusb_bulk_transfer(priv->handle, CH347_EPOUT, ptr, len - cur_len, &transferred, 1000);
+        err = ch347_bulk_transfer(priv, CH347_EPOUT, ptr, len - cur_len, &transferred, 1000);
+        if (!err && transferred != len - cur_len) err = -EIO;
         if (err) {
-            fprintf(stderr, "ch347: libusb: failed to send packet: %d\n", err);
+            fprintf(stderr, "ch347: transport: failed to send packet: %d\n", err);
             return err;
         }
     }
@@ -54,11 +74,15 @@ int ch347_spi_read_packet(struct ch347_priv *priv, uint8_t cmd, void *rx, int le
     int cur_len, rxlen, rx_received;
     int err, transferred;
 
-    err = libusb_bulk_transfer(priv->handle, CH347_EPIN, priv->tmpbuf, sizeof(priv->tmpbuf), &transferred, 1000);
+    if (!priv || !actual_len || len < 0 || (len && !rx)) return -EINVAL;
+    *actual_len = 0;
+    err = ch347_bulk_transfer(priv, CH347_EPIN, priv->tmpbuf, sizeof(priv->tmpbuf), &transferred, 1000);
     if (err) {
-        fprintf(stderr, "ch347: libusb: failed to receive packet: %d\n", err);
+        fprintf(stderr, "ch347: transport: failed to receive packet: %d\n", err);
         return err;
     }
+
+    if (transferred < 3 || transferred > (int)sizeof(priv->tmpbuf)) return -EIO;
 
     if (priv->tmpbuf[0] != cmd) {
         fprintf(stderr, "ch347: unexpected packet cmd: expecting 0x%02x but we got 0x%02x.\n", cmd, priv->tmpbuf[0]);
@@ -78,11 +102,12 @@ int ch347_spi_read_packet(struct ch347_priv *priv, uint8_t cmd, void *rx, int le
     rx_received = cur_len;
     while (rx_received < rxlen) {
         /* The leftover data length is known so we don't need to deal with packet overflow using tmpbuf. */
-        err = libusb_bulk_transfer(priv->handle, CH347_EPIN, rx + rx_received, rxlen - rx_received, &transferred, 1000);
+        err = ch347_bulk_transfer(priv, CH347_EPIN, rx + rx_received, rxlen - rx_received, &transferred, 1000);
         if (err) {
-            fprintf(stderr, "ch347: libusb: failed to receive packet: %d\n", err);
+            fprintf(stderr, "ch347: transport: failed to receive packet: %d\n", err);
             return err;
         }
+        if (transferred <= 0 || transferred > rxlen - rx_received) return -EIO;
         rx_received += transferred;
     }
 
@@ -98,7 +123,8 @@ int ch347_commit_settings(struct ch347_priv *priv) {
     if (err)
         return err;
 
-    return ch347_spi_read_packet(priv, CH347_CMD_SPI_INIT, &unknown_data, 1, &transferred);
+    err = ch347_spi_read_packet(priv, CH347_CMD_SPI_INIT, &unknown_data, 1, &transferred);
+    return err ? err : (transferred == 1 ? 0 : -EIO);
 }
 
 int ch347_get_hw_config(struct ch347_priv *priv) {
@@ -183,7 +209,7 @@ static int ch347_spi_trx_full_duplex_one(struct ch347_priv *priv, void *buf, uin
     if (err)
         return err;
 
-    if (transferred != len) {
+    if (transferred != (int)len) {
         fprintf(stderr, "ch347: not enough data received.");
         return -EINVAL;
     }
@@ -196,6 +222,7 @@ int ch347_spi_trx_full_duplex(struct ch347_priv *priv, void *buf, uint32_t len) 
         err = ch347_spi_trx_full_duplex_one(priv, buf, CH347_SPI_MAX_TRX);
         if (err)
             return err;
+        buf = (uint8_t *)buf + CH347_SPI_MAX_TRX;
         len -= CH347_SPI_MAX_TRX;
     }
     return ch347_spi_trx_full_duplex_one(priv, buf, len);
@@ -213,6 +240,7 @@ int ch347_spi_tx(struct ch347_priv *priv, const void *tx, uint32_t len) {
         err = ch347_spi_read_packet(priv, CH347_CMD_SPI_BLCK_WR, &unknown_data, 1, &transferred);
         if (err)
             return err;
+        if (transferred != 1) return -EIO;
         ptr += cur_len;
         len -= cur_len;
     }
@@ -234,6 +262,7 @@ int ch347_spi_rx(struct ch347_priv *priv, void *rx, uint32_t len) {
         err = ch347_spi_read_packet(priv, CH347_CMD_SPI_BLCK_RD, ptr, (int)cur_rx, &transferred);
         if (err)
             return err;
+        if (transferred <= 0) return -EIO;
         rxlen += transferred;
         ptr += transferred;
     }
@@ -251,7 +280,7 @@ int32_t ch347setI2Cstream(uint32_t speed)
     buf[1] = mch347A_CMD_I2C_STM_SET | (speed & 0x3);
     buf[2] = mch347A_CMD_I2C_STM_END;
 
-    int ret = libusb_bulk_transfer(priv->handle, BULK_WRITE_ENDPOINT, buf, 3, &actuallen, 3000);
+    int ret = ch347_bulk_transfer(priv, BULK_WRITE_ENDPOINT, buf, 3, &actuallen, 3000);
 
     if (ret < 0) {
         fprintf(stderr, "ch347setstream(): Failed write %d bytes '%s'\n", 3, strerror(-ret));
@@ -270,7 +299,7 @@ int32_t ch347setSDAandSCLHighlevels()
     buf[1] = 0x12;
     buf[2] = mch347A_CMD_I2C_STM_END;
 
-    int ret = libusb_bulk_transfer(priv->handle, BULK_WRITE_ENDPOINT, buf, 3, &actuallen, 3000);
+    int ret = ch347_bulk_transfer(priv, BULK_WRITE_ENDPOINT, buf, 3, &actuallen, 3000);
 
     if (ret < 0) {
         fprintf(stderr, "ch347setstream(): Failed write %d bytes '%s'\n", 3, strerror(-ret));
@@ -283,12 +312,28 @@ int32_t ch347setSDAandSCLHighlevels()
 
 struct ch347_priv *ch347_open() {
     struct ch347_priv *priv = calloc(1, sizeof(struct ch347_priv));
+#ifndef _WIN32
     int ret;
+#endif
 
     if (!priv) {
         fprintf(stderr, "ch347: faied to allocate memory.\n");
         return NULL;
     }
+#ifdef _WIN32
+    if (ch347_windows_open(priv) != 0) {
+        free(priv);
+        return NULL;
+    }
+    int config_error = ch347_get_hw_config(priv);
+    if (config_error != 0) {
+        ch347_windows_set_error_stage("Read CH347 hardware configuration", config_error);
+        ch347_windows_close(priv);
+        free(priv);
+        return NULL;
+    }
+    return priv;
+#else
     ret = libusb_init(&priv->ctx);
     if (ret < 0) {
         perror("ch347: libusb: init");
@@ -325,24 +370,40 @@ struct ch347_priv *ch347_open() {
     ERR_0:
     free(priv);
     return NULL;
+#endif
 }
 
 void ch347_close(struct ch347_priv *priv) {
+    if (!priv) return;
+#ifdef _WIN32
+    ch347_windows_close(priv);
+#else
     libusb_release_interface(priv->handle, CH347_SPI_IF);
     libusb_close(priv->handle);
     libusb_exit(priv->ctx);
+#endif
     free(priv);
 }
 
 
 bool ch347_spi_init(uint8_t ch_type, uint16_t busSpeed) {
-    int ret;
+    int ret = 0;
+#ifdef _WIN32
+    /* This Windows port deliberately supports SPI only. */
+    if (ch_type == 1 || ch_type == 2 || ch_type > 6) return true;
+#endif
+    if (priv) ch347_spi_shutdown();
     priv = ch347_open();
     if (!priv)  return 1;
     if (ch_type != 1)
     {
         ret = ch347_setup_spi(priv, 3, false, false, false);
-        if (ret) return true;
+        if (ret) {
+#ifdef _WIN32
+            ch347_windows_set_error_stage("SPI mode setup", ret);
+#endif
+            ch347_spi_shutdown(); return true;
+        }
     }
 
     int freq = 60000; //Speed in KHZ
@@ -369,20 +430,39 @@ bool ch347_spi_init(uint8_t ch_type, uint16_t busSpeed) {
                 break;
           }
 
-    if (ch_type != 1) ch347_set_spi_freq(priv, &freq);
-    return ret;
+    if (ch_type != 1) {
+        int clock_result = ch347_set_spi_freq(priv, &freq);
+        /* Native Microwire uses bit-banged GPIO; retain its existing behavior.
+         * The Windows backend rejects this protocol before opening a device. */
+        if (ch_type != 2) ret = clock_result;
+#ifdef _WIN32
+        if (ret) {
+            char stage[96];
+            snprintf(stage, sizeof(stage), "SPI clock setup (requested %u kHz)", busSpeed);
+            ch347_windows_set_error_stage(stage, ret);
+        }
+#endif
+    }
+    if (ret) ch347_spi_shutdown();
+    return ret != 0;
 }
 
 void ch347_spi_shutdown()
 {
     if (!priv)  return;
     ch347_close(priv);
+    priv = NULL;
 }
 
 int ch347GetDescriptor(uint8_t *buf)
 {
+#ifdef _WIN32
+    if (buf) memset(buf, 0, 0x12);
+    return -ENOTSUP; /* Vendor API does not expose the full USB descriptor. */
+#else
     int ret;
     ret = libusb_get_descriptor(priv->handle, LIBUSB_DT_DEVICE, 0x00, buf, 0x12);
     if(ret < 0) printf("Failed to get device descriptor: '%x'\n", ret);
     return ret;
+#endif
 }

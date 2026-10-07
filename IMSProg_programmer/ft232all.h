@@ -15,7 +15,10 @@
 
 #ifndef FT232ALL_H
 #define FT232ALL_H
+#include <stdint.h>
+#ifndef IMSPROG_WINDOWS_CH347_ONLY
 #include <ftdi.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {

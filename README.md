@@ -1,426 +1,362 @@
-## IMSProg
+**简体中文** | [English](README_EN.md)
+
+# IMSProg Windows 增强版
 
 <img align="right" src="img/mini_logo_IMSProg.svg">
 
-* [System software requirements](#system-software-requirements)
-* [How to use](#how-to-use)
-* [List of supported chips](#list-of-supported-chips)
-* [Packages](#packages)
-* [Changelog](ChangeLog)
-* [Project structure](#project-structure)
-* [Chip database format](#chip-database-format)
-* [Licensing](#Licensing)
-* [Translations](#Translations)
+本分支基于 [bigbigmdm/IMSProg](https://github.com/bigbigmdm/IMSProg)，用于 Windows 功能增强与自用源码备份。下文保留上游的使用说明、Linux/macOS 构建与安装资料、芯片列表、署名和许可证信息。其他平台的说明来自上游，并不代表本分支已完成这些平台的验证。
 
+模拟测试和构建检查不能证明编程器或存储芯片实机通过；硬件验证仍待完成。
 
-**IMSProg** - **I**2C, **M**icroWire and **S**PI EEPROM/Flash chip
-**Prog**rammer - is a program to read, write EEPROM chips use the
-`CH341A programmer` device, `CH347T programmer` device and `FT232H v1.2
-programmer` device.
+- [Windows 增强功能](#windows-增强功能)
+- [项目简介](#项目简介)
+- [编译项目](#编译项目)
+- [系统与软件要求](#系统与软件要求)
+- [使用方法](#使用方法)
+- [芯片数据库编辑器](#芯片数据库编辑器)
+- [芯片数据库更新器](#芯片数据库更新器)
+- [支持的芯片列表](#支持的芯片列表)
+- [软件包](#软件包)
+- [更新记录](ChangeLog)
+- [项目结构](#项目结构)
+- [芯片数据库格式](#芯片数据库格式)
+- [许可证](#许可证)
+- [翻译与贡献者](#翻译与贡献者)
 
-| CH341A/B v1.2 | CH341A v1.7| CH347T v1.0| CH347T v1.1| FT232H v1.2|
-| :---:         | :---:      | :---:      | :---:      | :---:      |
-| ![CH341A black](img/ch341_black150.png)  ![CH341A green](img/ch341_green150.png) | ![CH341A green](img/ch341v1_7.png) |![CH347T v1.0](img/ch347_150.png) |![CH347T v1.1](img/ch347_v1_1_150.png) |![CH347T v1.1](img/ft232h_150.png) |
+## Windows 增强功能
 
-The IMSProg makes respect to [QHexEdit2](https://github.com/Simsys/qhexedit2)
-hex editor and [SNANDer programmer](https://github.com/McMCCRU/SNANDer). The
-format of the chip database is based on the format used in EZP2019, EZP2020,
-EZP2023, Minpro I, XP866+ programmers. Warning, format is not the same!
+Windows x64 版本支持 CH341A/B 和 CH347T 的 SPI 操作，保留 libusb／libusbK 路径及可选的 WCH 官方后端源码。Windows 下暂不支持 FT232H、I2C 和 MicroWire，独立数据库编辑器与更新器也不参与 Windows 构建。只连接所选类型的一台编程器；设备唯一性检查仅覆盖后端能够枚举到的设备。
 
-IMSProg is a collection of tools:
+SPI NAND 的转储布局和片内 ECC 独立选择，相关控件只在 SPI NAND 模式显示：
 
-1. IMSProg - the chip programmer (it's the main part).
+| 布局 | 片内 ECC | Read／Verify | Write |
+| :--- | :--- | :--- | :--- |
+| 主数据 | 开 | 支持，读取经芯片纠错的主数据 | 支持 |
+| 主数据 | 关 | 支持，读取原始主数据 | 支持 |
+| 主数据 + OOB | 开 | 支持，主数据已纠错，不能称为原始转储 | 不支持此格式组合 |
+| 主数据 + OOB | 关 | 支持，按每页主数据后跟 OOB 保存 | 支持原始镜像写回 |
 
-2. IMSProg_editor - chip database editor.
+`Read`、`Verify` 和 `Auto` 按所选 ECC 配置操作，并回读 B0 寄存器确认。校验不会强制打开 ECC，避免原始数据在 ECC 关闭时写入、却在 ECC 打开时校验而误报。写入和校验要求缓冲区长度与所选布局完全匹配，未完成的读取不能直接用于写入。
 
-3. IMSProg_database_update - update chip database using external
-web-server.
+W25N01GW 识别为 `EF BA 21`，使用每页 2048 字节主数据与 64 字节 OOB：主数据镜像为 128 MiB，含 OOB 的镜像为 132 MiB。芯片需要 **1.8 V 供电与信号电平转换**。本分支没有新增软件 BCH/QPIC ECC、OOB 重排或镜像修复能力。操作步骤与格式要求见 [ECC/OOB 中文说明](docs/ECC_OOB_zh_CN.md)。
 
-![CH341A EEPROM programmer](img/IMSProg_1.png)
+### Windows 构建
 
-![CH341A EEPROM programmer](img/IMSProg.png)
+使用与 Qt 匹配的 x64 MinGW、CMake、Ninja 和 Qt LinguistTools。以 MSYS2 UCRT64 为例，将工具链 `bin` 加入本次终端的 `PATH`，在仓库根目录运行：
 
-## Compiling project
+```powershell
+cmake -S . -B build-windows -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/msys64/ucrt64
+cmake --build build-windows --parallel
+cmake --install build-windows --prefix dist-windows
 ```
+
+使用其他 Qt 套件时，替换 `CMAKE_PREFIX_PATH`。程序与 `IMSProg.Dat` 放在同一目录。Qt 部署、USB 后端和连接诊断的详细说明见 [Windows 构建与连接指南](docs/WINDOWS_CH347.md)。仓库仅发布源码、构建资料、必要的依赖对应源码及许可证，没有附带 EXE、WCH DLL 或驱动；WCH 二进制的公共再分发许可与 GPL 兼容性仍未核实。
+
+### 测试与验证范围
+
+本机已使用 MinGW GCC 16.2.0 和 Qt 6.11.2 完成 Windows x64 Release 构建，CH341 异步 560 案例、USB 描述符选择测试及 19 项 Windows UI 源码检查通过。完整硬件无关回归的运行方式见 [tests/README.md](tests/README.md)，Qt 集成覆盖见 [tests/ui_README.md](tests/ui_README.md)。依赖 Unix 头文件与 ELF 链接行为的测试需在 GNU/Linux 运行，不能将 MinGW 无法运行的测试记为通过。
+
+[本分支 CI](https://github.com/FlyFish-go/IMSProg/actions/workflows/windows-regression.yml) 执行 Windows 构建、Linux 协议与后端回归、ASan/UBSan 和原生 Qt 界面测试。实际状态以对应提交的 Actions 结果为准。模拟测试、源码检查和成功构建均不代表真实 Windows 驱动、USB 时序、芯片 ECC 行为或电气连接已通过；目前没有完成实机验证。
+
+## 项目简介
+
+**IMSProg** 的名称来自 **I**2C、**M**icroWire、**S**PI 和 **Prog**rammer。它通过 `CH341A`、`CH347T` 和 `FT232H v1.2` 编程器读取、写入 EEPROM/Flash 芯片。
+
+| CH341A/B v1.2 | CH341A v1.7 | CH347T v1.0 | CH347T v1.1 | FT232H v1.2 |
+| :---: | :---: | :---: | :---: | :---: |
+| ![CH341A 黑色](img/ch341_black150.png) ![CH341A 绿色](img/ch341_green150.png) | ![CH341A v1.7](img/ch341v1_7.png) | ![CH347T v1.0](img/ch347_150.png) | ![CH347T v1.1](img/ch347_v1_1_150.png) | ![FT232H v1.2](img/ft232h_150.png) |
+
+IMSProg 使用了 [QHexEdit2](https://github.com/Simsys/qhexedit2) 十六进制编辑器和 [SNANDer](https://github.com/McMCCRU/SNANDer) 编程器项目的成果。芯片数据库格式参考 EZP2019、EZP2020、EZP2023、Minpro I 和 XP866+，但格式并不相同，不能直接互换。
+
+项目包含三个工具：
+
+1. `IMSProg`：芯片编程器，主程序。
+2. `IMSProg_editor`：芯片数据库编辑器。
+3. `IMSProg_database_update`：从外部服务器更新芯片数据库。
+
+![CH341A EEPROM 编程器](img/IMSProg_1.png)
+
+![CH341A EEPROM 编程器](img/IMSProg.png)
+
+## 编译项目
+
+下面是上游 Linux/macOS 构建入口；Windows 增强版的构建资料随对应源码提供。
+
+```sh
 git clone https://github.com/bigbigmdm/IMSProg.git && cd IMSProg
 sudo ./build_all.sh
 ```
 
-## System software requirements
+## 系统与软件要求
 
 ### Linux
 
-For build are needed:
-- g++ or clang
+构建需要：
+
+- g++ 或 clang
 - CMake
 - libusb 1.0
 - libftdi
-- Qt5 or Qt6
-- Qt5LinguistTools or Qt6LinguistTools
-- pkgconf or pkg-config
+- Qt5 或 Qt6
+- Qt5LinguistTools 或 Qt6LinguistTools
+- pkgconf 或 pkg-config
 - udev
 
-On Debian and derivatives:
+Debian 及其衍生发行版，使用 Qt5：
 
-- for Qt5:
-
-`sudo apt-get install cmake g++ libusb-1.0-0-dev qtbase5-dev qttools5-dev pkgconf libftdi1-dev`
-
-- for Qt6:
-
-`sudo apt-get install cmake g++ libusb-1.0-0-dev pkgconf qt6-base-dev 
-qt6-tools-dev libftdi1-dev linguist-qt6 qt6-l10n-tools qt6-base-dev-tools 
-qt6-tools-dev-tools`
-
-On Debian >=13 and Ubuntu >=24.04:
-
-`sudo apt-get install systemd-dev`
-
-On older:
-
-`sudo apt-get install udev`
-
-:information_source: Debian < 11 and Ubuntu < 20.04 are not supported, you may
-unable to have it working on them.
-
-On Fedora and derivatives:
-
-- for Qt5:
-
+```sh
+sudo apt-get install cmake g++ libusb-1.0-0-dev qtbase5-dev qttools5-dev pkgconf libftdi1-dev
 ```
+
+使用 Qt6：
+
+```sh
+sudo apt-get install cmake g++ libusb-1.0-0-dev pkgconf qt6-base-dev qt6-tools-dev libftdi1-dev linguist-qt6 qt6-l10n-tools qt6-base-dev-tools qt6-tools-dev-tools
+```
+
+Debian 13 及以上、Ubuntu 24.04 及以上还需要：
+
+```sh
+sudo apt-get install systemd-dev
+```
+
+更早的版本需要：
+
+```sh
+sudo apt-get install udev
+```
+
+上游不支持 Debian 11 之前或 Ubuntu 20.04 之前的系统，在这些版本上可能无法正常运行。
+
+Fedora 及其衍生发行版，使用 Qt5：
+
+```sh
 sudo dnf install cmake libusb libusb1 libusb1-devel qt5-qtbase-devel
 sudo dnf install pkgconf-pkg-config qt5-linguist libftdi-devel
 ```
 
-- for Qt6:
+使用 Qt6：
 
-```
+```sh
 sudo dnf install cmake gcc-c++ libusb1-devel pkgconf-pkg-config qt6-qtbase-devel
 sudo dnf install qt6-qttools-devel qt6-linguist libftdi-devel
 ```
 
-On OpenSUSE and derivatiles:
+openSUSE 及其衍生发行版，使用 Qt5：
 
-- for Qt5:
-
-```
+```sh
 sudo zypper install cmake gcc-c++ libqt5-qtbase-devel
 sudo zypper install libqt5-linguist-devel libusb-1_0-devel
 sudo zypper install libftdi1-devel
 ```
 
-- for Qt6:
+使用 Qt6：
 
-```
+```sh
 sudo zypper install cmake gcc-c++ libqt6-qtbase-devel
 sudo zypper install libqt6-linguist-devel libusb-1_0-devel
 sudo zypper install libftdi1-devel
 ```
 
 ### macOS
-if using Homebrew then Xcode Command Line Tools will install by default, if not
-then install manually from terminal:   
 
-```
+使用 Homebrew 时，通常会安装 Xcode Command Line Tools；否则可在终端手动安装：
+
+```sh
 xcode-select --install
 ```
 
-install the required packages  
+通过 Homebrew 安装依赖：
 
-using brew:  
-
-```
+```sh
 brew install qt@6 libusb cmake pkgconf libftdi
 ```
 
-if not using the [build_all.sh](build_all.sh) script then make sure `libusb` is
-in your `C_INCLUDE_PATH`
+不使用 [build_all.sh](build_all.sh) 时，需确保 `C_INCLUDE_PATH` 包含 `libusb` 的头文件目录：
 
-```
+```sh
 export C_INCLUDE_PATH=/usr/local/opt/libusb/include
 ```
 
-## How to use:
+## 使用方法
 
-Note: for macOS use CMD `⌘` instead of CTRL for keyboard shortcuts.
+macOS 上的快捷键使用 Command（⌘）代替 Ctrl。下述菜单名称保留英文，便于与界面对应。
 
-## Chip programmer
+### 启动
 
-### Launching
-Can be launched from Terminal by running the command
+可在终端运行：
+
+```sh
+IMSProg
 ```
-$ IMSProg
-```
 
-### Connecting
-- Insert the chip into the appropriate slot of the CH341A programmer. The
-`24xxx` and `25xxx` series chips must be inserted directly, according to the
-markings on the PCB of the CH341A programmer. The `93xxx` series chips must be
-inserted into the `93xxx adapter` and the adapter into the marking `25xxx`
-programmer slot. The DataFlash `AT45DBxxx` series chips must be mounted in a
-`SOP-8 DIP-8` and this adapter shall be inserted into the `45xxx` adapter.
-The `45xxx` adapter must be installed in the programmer slot marked `25xxx`.
-The SPI NAND Flash chips must be mounted in a `WSON-8 DIP-8` adapter. This
-adapter must be installed in the programmer slot marked `25xxx`.
+### 连接芯片与编程器
+
+- 将芯片插入 CH341A 编程器的相应插座。`24xxx` 和 `25xxx` 根据 PCB 标记直接插入；`93xxx` 先插入 `93xxx` 转接板，再将转接板插入标记为 `25xxx` 的插座。
+- DataFlash `AT45DBxxx` 先安装到 `SOP-8 DIP-8` 转接板，再插入 `45xxx` 转接板，最后插入编程器的 `25xxx` 插座。
+- SPI NAND Flash 使用 `WSON-8 DIP-8` 转接板，并插入 `25xxx` 插座。
 
 > [!NOTE]
-> *In the current version, the MicroWire (93Cxx) protocol is
-not supported by the CH347 programming device.*
->
-> *CH347T V1.1 - a device with a lower speed than the CH347T V1.0.*
+> 上游当前版本的 CH347 编程器不支持 MicroWire（93Cxx）协议。CH347T v1.1 的速度低于 CH347T v1.0。
 
-![Adapter](img/93xxx_adapter.png)
+![93xxx 转接板](img/93xxx_adapter.png)
 
-- If the chip supply voltage is 1.8 volt he must be inserted in
-`1.8 volt adapter` and the adapter into needed programmer slot.
+供电为 1.8 V 的芯片必须使用 `1.8 volt adapter`，再接入相应插座。
 
-![Adapter](img/1_8_adapter.png)
+![1.8 V 转接板](img/1_8_adapter.png)
 
-- Plug the CH341A programmer into the USB socket of your computer and running
-the `IMSProg`.
-- You can plug and unplug the programmer device (CH341A) to the USB port at
-any time when basic operations (reading, checking, and programming) are not in
-progress.
-- Read more about adapters
-[here](https://github.com/bigbigmdm/Tools_for_CH341A_programmer?tab=readme-ov-file#Homemade-Chip-adapters).
+将 CH341A 接入计算机 USB 接口并启动 `IMSProg`。未进行读取、校验或编程等操作时，可以插拔编程器。转接板的更多说明见[上游转接板项目](https://github.com/bigbigmdm/Tools_for_CH341A_programmer?tab=readme-ov-file#Homemade-Chip-adapters)。
 
+### 选择芯片类型
 
-### Chip type selecting
-Select the type of chip used from the `Type` pop-up menu: `SPI_FLASH` when
-using SPI NOR FLASH chips of the `25xxx` series, `SPI_NAND` when
-using SPI NAND FLASH chips, `24_EEPROM` when using I2C EEPROM of the `24xxx`
-series, `93_EEPROM` when using MicroWire EEPROM of the `93xxx` series,
-`45_EEPROM` when using DataFlash chips `AT45DBxxx` series.
-When using `25xxx` series SPI NOR FLASH chips (Menu item `type` -> `SPI_FLASH`),
-or SPI NAND FLASH chips (Menu item `type` -> `SPI_NAND`), or `AT45DBxx` series
-SPI FLASH (Menu item `type` -> `45_EEPROM`) the `Detect` button will be
-available. When the `Detect` button or ![Detect](img/test64.png) or `<Ctrl+D>`
-is pressed, the JEDEC information is read from the chip and all parameters of
-that chip are loaded from the chip database. Any parameter (`size`, `page size`,
-`block size`, `VCC voltage`, `and 4-bit address length`) can be changed
-manually. You can manually enter the `Manufacture` and `Name` pop-up menu data -
-all other parameters will be automatically loaded from the chip database.
-When using `24xxx` or `93xxx` or `95xxx` or `25xxx` SPI EEPROM (non NOR FLASH)
-series chips, it is necessary to manually enter the `Manufacture` and `Name`
-pop-up menu data - all other parameters will be automatically loaded from the
-chip database.
+在 `Type` 菜单中选择：
 
-### File operations
-- The ![Save](img/save64.png) or `<Ctrl+S>` button is used to save the
-computer buffer to a file.
+- `SPI_FLASH`：`25xxx` 系列 SPI NOR Flash。
+- `SPI_NAND`：SPI NAND Flash。
+- `24_EEPROM`：`24xxx` 系列 I2C EEPROM。
+- `93_EEPROM`：`93xxx` 系列 MicroWire EEPROM。
+- `45_EEPROM`：`AT45DBxxx` 系列 DataFlash。
 
-- The ![Open](img/open64.png) or `<Ctrl+O>` button is used to save the file in
-the computer buffer.
+`SPI_FLASH`、`SPI_NAND` 和 `45_EEPROM` 支持 `Detect` 按钮。点击 `Detect`、![检测](img/test64.png) 或按 `<Ctrl+D>`，会读取 JEDEC 信息并从数据库加载芯片参数。容量、页大小、块大小、VCC 和地址长度可以手动调整。手动选择 `Manufacture` 与 `Name` 也会自动加载其他参数。
 
-- The ![SavePart](img/saveBlock64.png) or `<Ctrl+Shift-S>` button is used to
-save a part of the computer buffer to a file (the start address and length of
-the part must be entered). This operation can be used when splitting a binary
-data image into parts.
+`24xxx`、`93xxx`、`95xxx` 和非 NOR Flash 的 `25xxx` SPI EEPROM 需要手动选择厂商与型号。
 
-- The ![LoadPart](img/loadBlock64.png) or `<Ctrl+Shift-S>` button is used to
-load a small file to a certain address in the buffer. The data fragment in the
-buffer will be replaced with new data from the file.
+### 文件操作
 
-- The ![Edit](img/chipEdit64.png) or `<Ctrl+Q>` button is used to invoke the
-chip database editor.
+- ![保存](img/save64.png) 或 `<Ctrl+S>`：将缓冲区保存到文件。
+- ![打开](img/open64.png) 或 `<Ctrl+O>`：将文件加载到缓冲区。
+- ![保存片段](img/saveBlock64.png) 或 `<Ctrl+Shift-S>`：按输入的起始地址和长度保存缓冲区片段，可用于拆分二进制镜像。
+- ![加载片段](img/loadBlock64.png)：将小文件加载到缓冲区指定地址，替换该区域的数据。上游说明将此操作的快捷键也记作 `<Ctrl+Shift-S>`；以界面实际显示为准。
+- ![数据库编辑器](img/chipEdit64.png)：打开芯片数据库编辑器（快捷键见下表）。
+- `File / Import from Intel HEX`：将 Intel HEX 文件加载到缓冲区。
+- `File / Export to Intel HEX`：将缓冲区导出为 Intel HEX 文件。
 
-- The menu item `File / Import from Intel HEX` is used to save the Intel HEX
-file in the computer buffer.
+### 编程器基本操作
 
-- The menu item `File / Export to Intel HEX` is used to save the computer buffer
-to a file in Intel HEX format.
+- `Read`、![读取](img/read64.png) 或 `<Ctrl+R>`：将芯片数据读入缓冲区。
+- ![写入](img/write64.png) 或 `<Ctrl+W>`：将缓冲区数据写入芯片。
+- ![擦除](img/erase64.png) 或 `<Ctrl+E>`：擦除芯片。
+- `Main Menu -> Chip -> Check erase` 或 `<Ctrl+J>`：检查擦除结果。
+- ![校验](img/verify64.png) 或 `<Ctrl+T>`：比较芯片数据和缓冲区数据。
+- `Auto`：依次执行擦除、擦除检查、写入和校验，可取消勾选不需要的步骤。
+- ![停止](img/stop64.png) 或 `<Ctrl+I>`：中断读取、写入、擦除或校验。
 
-### Basic programmer operations
-- Pressing `Read` or ![Read](img/read64.png) or `<Ctrl+R>` to read data from
-the chip into the computer buffer.
+进度条显示读取、擦除和校验等操作的进度。`i` 按钮显示芯片与 CH341A 的连接示意图。
 
-- Pressing ![Write](img/write64.png) or `<Ctrl+W>` to write data from the
-computer buffer into the chip.
-
-- Pressing ![Erase](img/erase64.png) or `<Ctrl+E>` will erase all data in the
-chip.
-
-- By selecting `Main Menu -> Chip -> Check erase` or pressing `<Ctrl+J>`, you
- can check whether all data has been correctly deleted from the chip.
-
-- Pressing the ![Verify](img/verify64.png) or `<Ctrl+T>` button causes the
-data in the chip and in the computer buffer to be compared.
-
-The progress bar shows the progress of the read, erase, and verify operations.
-
-- The `Auto` button is used to perform erase, check erase, write and verify
-operations in sequence. If one of these operations is not needed, you can
-uncheck the checkbox for that operation.
-
-- The ![Stop](img/stop64.png) or `<Ctrl+I>` key is used to force interruption
-of chip read/write/erase/verify operations.
-
-- The `i` key show the connection chip to CH341A device image form.
-- The `Main menu -> Chip -> Chip info` or `<Ctrl+P>` item shows the
-Serial Flash Discoverable Parameter (SFDP) register and the status registers
-of the SPI NOR flash memory chips.
+`Main menu -> Chip -> Chip info` 或 `<Ctrl+P>` 显示 SPI NOR Flash 的 SFDP 与状态寄存器。
 
 ![SFDP](img/sfdp_unblock_en.png)
 
-If the SPI NOR FLASH chip is detected normally, but is not read (gives the
-message `Error reading sector 0`), then in the `Chip info` window you can
-change bits `BP4` and `BP3` to zero and press the `Write registers` button.
-Then repeat the chip reading operation.
+如果 SPI NOR Flash 能检测但无法读取，提示 `Error reading sector 0`，上游建议在 `Chip info` 中将 `BP4` 和 `BP3` 设为 0，点击 `Write registers` 后重试读取。
 
 ![SFDP](img/sfdp_unblock_en2.png)
 
-If the SPI NOR FLASH chip is read unreliably (with a different checksum each
-time) and `Status Register 2` is available in the chip, you can change bits
-`DRV0` and `DRV1` to zero and press the Write Registers button. This will
-increase the power of the output stage of the `DO` pin of the chip. Then
-repeat the chip read operation.
+如果每次读取校验和不同，且芯片有 `Status Register 2`，上游建议将 `DRV0` 和 `DRV1` 设为 0 并写入寄存器，以提高 `DO` 引脚输出驱动能力，然后重新读取。具体位定义以芯片数据手册为准。
 
-For `25xxx`, `95xxx` and `45xxx` series chips that have only one status
-register, the `Chip info` form is as follows:
+只有一个状态寄存器的 `25xxx`、`95xxx` 和 `45xxx`，其信息窗口如下：
 
-![SFDP](img/sr0_en.png)
+![单状态寄存器](img/sr0_en.png)
 
-For `SPI NAND FLASH` chips the `Chip info` form is as follows:
+SPI NAND Flash 的信息窗口如下：
 
-![SFDP](img/sr_nand_en.png)
+![NAND 状态寄存器](img/sr_nand_en.png)
 
-- The `Main menu -> Chip -> Security Registers` or `<Ctrl+U>` item is used
-to work with `SPI NOR Flash` and `SPI NAND FLASH` security registers data. This
-form allows reading, write, erase, save and load security register data from the
-computer.
+`Main menu -> Chip -> Security Registers` 或 `<Ctrl+U>` 用于 SPI NOR Flash 和 SPI NAND Flash 的安全寄存器，支持读取、写入、擦除、保存和加载。
 
-![Security registers](img/Security_registers_form.png)
+![安全寄存器](img/Security_registers_form.png)
 
-The buttons at the bottom of the form (![Read](img/read64.png),
-![Erase](img/erase64.png), ![Write](img/write64.png), ![Open](img/open64.png),
-![Save](img/save64.png)) perform a similar function to the top buttons on the
-main form. The `Security register number:` drop-down menu allows you to select
-one of the valid registers for the current chip for operation. The security
-registers can be locked for writing forever. If you want to know about this,
-please see `Main Menu -> Chip -> Chip Information` item or <Ctrl+P>, data
-fields in `LB3`, `LB2` and `LB1` in `Status register 1`.
-Please refer to the datasheet of your chip for detailed information.
-For NAND FLASH chips you can scanning bad blocks, use
-`Main Menu -> Chip -> Bad block management` or `<Ctrl+B>` key.
+窗口底部的 ![读取](img/read64.png)、![擦除](img/erase64.png)、![写入](img/write64.png)、![打开](img/open64.png)、![保存](img/save64.png) 与主窗口对应按钮的功能相同。`Security register number:` 用于选择当前芯片的有效寄存器。
 
-![Bad block scan](img/bbm_chip_scan_en.png)
+安全寄存器可能被永久写保护。可通过 `Main Menu -> Chip -> Chip Information` 或 `<Ctrl+P>` 查看上游说明中的 `Status register 1` 的 `LB3`、`LB2`、`LB1`；详细位定义及锁定行为应查阅芯片数据手册。
 
-For these chips, you can also change the erase and write parameters in
-this menu.
+NAND Flash 可以通过 `Main Menu -> Chip -> Bad block management` 或 `<Ctrl+B>` 扫描坏块：
 
-![Bad block scan](img/bbm_settings_en.png)
+![坏块扫描](img/bbm_chip_scan_en.png)
+
+也可以在该菜单调整擦除和写入参数：
+
+![坏块设置](img/bbm_settings_en.png)
 
 > [!NOTE]
-> *In this version of IMSProg, damaged blocks are not skipped when executing the
-> `Verify` and `Check erase` functions for NAND Flash chips. If your chip
-> contains damaged blocks, please do not use these functions.*
+> 上游版本对 NAND Flash 执行 `Verify` 和 `Check erase` 时不会跳过坏块。如果芯片有坏块，上游建议不要使用这两项功能。
 
-### Buffer (Hex editor) operations
-The hexadecimal chip editor (right side of the screen) is used to display and
-modify buffer data.
+### 缓冲区与十六进制编辑器
 
-It contains the following controls: ![Undo](img/undo64.png) undo,
-![Redo](img/redo64.png) redo, and the ![Search](img/hexsearch64.png)
-search/replace. The `[Ctrl+A]` key used to update the CRC24 checksum. The
-`[Ctrl+G]` key used to move the cursor to the entered address. The `[Ctrl+L]`
-key is used to fill the hex editor buffer with a special test array. The
-`[Ctrl+K]` key is used to fill the hex editor buffer with a user code. The
-`[Ctrl+M]` key used for compares the results of the last and penultimate chip
-read or file open operation.
+右侧十六进制编辑器用于显示与修改缓冲区数据，提供 ![撤销](img/undo64.png)、![重做](img/redo64.png) 和 ![搜索替换](img/hexsearch64.png)。`<Ctrl+A>` 计算 CRC24，`<Ctrl+G>` 跳转地址，`<Ctrl+L>` 填充测试数据，`<Ctrl+K>` 填充用户指定值，`<Ctrl+M>` 比较最近两次读取或打开文件的结果。
 
-![compare](img/compare_files_en.png)
+![比较数据](img/compare_files_en.png)
 
-### Programmer type
-The `Main menu -> Programmer`  item is used to change the programmer type.
+### 选择编程器
 
-### List of hotkeys:
+`Main menu -> Programmer` 用于切换编程器类型。
 
-| Hotkey |       Function                                |
-| :---   |       :---                                    |
-| Ctrl+A | Checksum calculate                            |
-| Ctrl+B | Bad block management for NAND chips           |
-| Ctrl+C | Copy selected bytes (Hex editor)              |
-| Ctrl+D | Detect chip                                   |
-| Ctrl+E | Erase chip                                    |
-| Ctrl+F | Find/Replace (Hex editor)                     |
-| Ctrl+G | Goto address (Hex editor)                     |
-| Chrl+H | About IMSProg                                 |
-| Ctrl+I | Force stop chip operation                     |
-| Ctrl+J | Check erase chip                              |
-| Ctrl+K | Fill the user code (Hex editor)               |
-| Ctrl+L | Fill the test array (Hex editor)              |
-| Ctrl+M | Compare files (Hex editor)                    |
-| Ctrl+N | Edit chip database                            |
-| Ctrl+O | Open file                                     |
-| Ctrl+P | Chip info (SFDP + status registers)           |
-| Ctrl+Q | Exit                                          |
-| Ctrl+R | Read chip                                     |
-| Ctrl+S | Save file                                     |
-| Ctrl+T | Verify chip                                   |
-| Ctrl+U | Security registers                            |
-| Ctrl+V | Paste selected bytes (Hex editor)             |
-| Ctrl+W | Write chip                                    |
-| Ctrl+X | Exit                                          |
-| Ctrl+Y | Redo (Hex editor)                             |
-| Ctrl+Z | Undo (Hex editor)                             |
+### 快捷键
 
-## Chip database editor
+| 快捷键 | 功能 |
+| :--- | :--- |
+| Ctrl+A | 计算校验和 |
+| Ctrl+B | NAND 坏块管理 |
+| Ctrl+C | 复制选中字节（十六进制编辑器） |
+| Ctrl+D | 检测芯片 |
+| Ctrl+E | 擦除芯片 |
+| Ctrl+F | 查找／替换（十六进制编辑器） |
+| Ctrl+G | 跳转地址（十六进制编辑器） |
+| Ctrl+H | 关于 IMSProg |
+| Ctrl+I | 中断芯片操作 |
+| Ctrl+J | 检查擦除 |
+| Ctrl+K | 填充用户指定值（十六进制编辑器） |
+| Ctrl+L | 填充测试数据（十六进制编辑器） |
+| Ctrl+M | 比较文件（十六进制编辑器） |
+| Ctrl+N | 编辑芯片数据库 |
+| Ctrl+O | 打开文件 |
+| Ctrl+P | 芯片信息（SFDP 与状态寄存器） |
+| Ctrl+Q | 退出 |
+| Ctrl+R | 读取芯片 |
+| Ctrl+S | 保存文件 |
+| Ctrl+T | 校验芯片 |
+| Ctrl+U | 安全寄存器 |
+| Ctrl+V | 粘贴字节（十六进制编辑器） |
+| Ctrl+W | 写入芯片 |
+| Ctrl+X | 退出（上游表格记录；以界面为准） |
+| Ctrl+Y | 重做（十六进制编辑器） |
+| Ctrl+Z | 撤销（十六进制编辑器） |
 
-![Chip editor](img/chip_editor_eng.png)
+## 芯片数据库编辑器
 
-Chip base editor - IMSProg_editor is a stand-alone program that can be launched
-from the `Development` menu or from the IMSProg program by clicking on
-![Edit](img/chipEdit64.png).
+![数据库编辑器](img/chip_editor_eng.png)
 
-All operations in the editor become available only after loading a chip base
-file with .Dat extension.
+`IMSProg_editor` 是独立程序，可以从系统的 `Development` 菜单启动，也可以点击 IMSProg 中的 ![编辑](img/chipEdit64.png)。加载 `.Dat` 数据库后，编辑器的操作才会启用。
 
-Menu `File`.
+`File` 菜单：
 
-- `Open` or `[Ctrl+O]` or ![open](img/open.png) allows you to
-load the data file.
-- `Save` or `[Ctrl+S]` or ![save](img/save.png) saves the chip
-parameter table to a database file.
-- `Exit` or `[Ctrl+X]` or ![exit](img/exit.png) - exits the
-editor.
-- `Export to CSV format` or `[Ctrl+X]` or ![export](img/tocsv.png)
-allows to unload data about chips in CSV format for further processing by
-spreadsheet software - LibreOffice Calc, OpenOffice Calc, Google Tables, etc.
-- `Import from CSV file` or `[Ctrl+Shift+X]` or
-![import](img/import.png) - loads a table in CSV format and adds
-data from it to the existing data in the table.
+- `Open`、`<Ctrl+O>` 或 ![打开](img/open.png)：加载数据库。
+- `Save`、`<Ctrl+S>` 或 ![保存](img/save.png)：保存芯片参数表。
+- `Exit`、`<Ctrl+X>` 或 ![退出](img/exit.png)：退出编辑器。
+- `Export to CSV format` 或 ![导出](img/tocsv.png)：导出 CSV，可用 LibreOffice Calc、OpenOffice Calc、Google Sheets 等处理。上游将快捷键记录为 `<Ctrl+X>`；以界面为准。
+- `Import from CSV file`、`<Ctrl+Shift+X>` 或 ![导入](img/import.png)：导入 CSV，并将其中的数据追加到当前表格。
 
-Menu `Edit`.
+`Edit` 菜单：
 
-- `Delete Rows` or `Del` or ![delete](img/del.png) - deletes one
-or more rows.
-- `Add Row` or `Ins` or ![add](img/plus.png) - adds a row below
-the selected row and copies all data from the selected row to the new row.
-- `Move Up` or '[Ctrl+Up]` or ![up](img/undo.png) - moves the
-selected line up.
-- `Move Down' or `[Ctrl+Down]` or ![down](img/redo.png) - moves
-the selected row down.
-- `Import selected rows to CSV format` or ![import](img/import.png)
-- saves selected rows to CSV file.
+- `Delete Rows`、`Del` 或 ![删除](img/del.png)：删除一行或多行。
+- `Add Row`、`Ins` 或 ![添加](img/plus.png)：在选中行下方插入新行，复制选中行的数据。
+- `Move Up`、`<Ctrl+Up>` 或 ![上移](img/undo.png)：将选中行上移。
+- `Move Down`、`<Ctrl+Down>` 或 ![下移](img/redo.png)：将选中行下移。
+- `Import selected rows to CSV format` 或 ![导出所选行](img/import.png)：将选中行保存为 CSV（名称沿用上游）。
 
-The most recent version of the chip database file can be downloaded from this
-page in both .Dat and .csv formats.
+上游项目页面提供最新芯片数据库的 `.Dat` 与 `.csv` 格式。
 
-## Chip updater
+## 芯片数据库更新器
 
-Once IMSProg_database_update app has been run, the downloaded database is copied
- to the ~/.local/share/imsprog folder. The script then displays the number of
- chips in the database before and after the update.
+运行 `IMSProg_database_update` 后，下载的数据库复制到 `~/.local/share/imsprog`，并显示更新前后的芯片数量。该目录是上游 Linux 的用户数据路径。
 
-## List of supported chips
+## 支持的芯片列表
 
 ### I2C EEPROM
 24C01, 24C02, 24C04, 24C08, 24C16, 24C32, 24C64, 24C128, 24C256, 24C512,
 24LC515*, 24C1024, 24LC1025*, 24M02
 
 > [!NOTE]
-> *For 24LC515 and 24LC1025: Pin 3 must be disconnected from the ground pin and 
-connected to the VCC pin via a 4.7 kΩ resistor.*
+> *24LC515 和 24LC1025 的第 3 脚需与地断开，再通过 4.7 kΩ 电阻连接到 VCC。*
 
 ### I2C FeRAM
 - RAMXEED
@@ -433,10 +369,10 @@ FM24C04A, FM24C16A, FM24C32A, FM24C64A, FM24C128, FM24C256, FM24C512, FM24CL04A,
 FM24CL16A, FM24CL32A, FM24CL64A
 
 
-### MicroWire EEPROM (only for CH341A programmer)
+### MicroWire EEPROM（仅 CH341A 编程器）
 93C46, 93C56, 93C66, 93C76, 93C86
 
-### Serial SPI Bus EEPROM
+### 串行 SPI EEPROM
 - ST
 
 M95010, M95020, M95040, M95080, M95160, M95320, M95640, M95128, M95256, M95512,
@@ -458,7 +394,7 @@ AT25F512, AT25F1024, AT25F2048, AT25F4096
 CAT25C01, CAT25C02, CAT25C04, CAT25C08, CAT25C16, CAT25C32, CAT25C64, CAT25C128,
 CAT25C256, CAT25C512
 
-### Serial SPI Bus FeRAM
+### 串行 SPI FeRAM
 - RAMXEED
 
 MB85RS16N, MB85RD16LX, MB85RS64VY, MB85RS64V, MB85RS128TY, MB85RS128B,
@@ -699,48 +635,48 @@ GD5F2GM7UExxG, GD5F2GM7RExxG, GD5F4GQ6UExxG, GD5F4GQ6RExxG, GD5F4GM8UExxG,
 GD5F4GM8RExxG, GD5F1GQ4UExxG, GD5F1GQ4RExxG, GD5F1GQ4UFxxS, GD5F1GQ4RFxxS,
 GD5F2GQ4UExxG, GD5F2GQ4RExxG
 
-The latest version of the chip database can be found
-[here](https://antenna-dvb-t2.ru/dl_all/IMSProg.Dat).
-You can download it and copy it to the ~/.local/share/imsprog folder:
+最新芯片数据库可从[这里](https://antenna-dvb-t2.ru/dl_all/IMSProg.Dat)下载，并复制到上游 Linux 用户数据目录 `~/.local/share/imsprog`：
 
 `cp IMSProg.Dat ~/.local/share/imsprog`
 
-## Packages
-- There is a work in progress for add IMSProg to official `Debian` (and
-derivatives repositories)
+## 软件包
 
-  For some Ubuntu versions you can use this PPA by adding `ppa:bigmdm/imsprog`
-  to your system's Software Sources.
-```
+以下为上游发行与第三方打包信息，保留供参考；这些链接中的软件包不包含本分支新增的 Windows 源码修改。
+
+- 上游正在推进进入 Debian 及其衍生发行版的软件仓库。部分 Ubuntu 版本可使用 `ppa:bigmdm/imsprog`：
+
+```sh
 sudo add-apt-repository ppa:bigmdm/imsprog
 sudo apt update
 sudo apt install imsprog
 ```
-  Is also possible manually build deb package using `debian/latest` branch.
 
-- For some versions of Fedora, you can use the official repositories.
-```
+也可以使用上游 `debian/latest` 分支手动构建 deb 包。
+
+- 部分 Fedora 版本提供官方包：
+
+```sh
 sudo dnf install imsprog
 ```
 
 <a href="https://repology.amdmi3.ru/project/imsprog/versions">
-    <img src="https://repology.amdmi3.ru/badge/vertical-allrepos/imsprog.svg" alt="Packaging status" align="right">
+    <img src="https://repology.amdmi3.ru/badge/vertical-allrepos/imsprog.svg" alt="软件包状态" align="right">
 </a>
 
-- The `RPM package` by [Red Soft](https://redos.red-soft.ru/) can be downloaded  
-[here](http://repo.red-soft.ru/redos/7.3/x86_64/updates/)
-- The `RPM package` by [ALT Linux](https://packages.altlinux.org/en/sisyphus/srpms/IMSProg/)
-- The `RPM package` by [ROSA Linux](https://mirror.rosalinux.ru/rosa/rosa2021.1/repository/x86_64/contrib/release/)
-- The `ARCH AUR repository` by [kjkent](https://github.com/kjkent) is [here](https://aur.archlinux.org/packages/imsprog)
-- The `openSUSE` package is [here](https://software.opensuse.org/package/IMSProg?search_term=imsprog)
-- The `Debian` package is [here](https://tracker.debian.org/pkg/imsprog)
-- The Windows release by [Anime4000](https://github.com/Anime4000) is [here](https://github.com/Anime4000/IMSProg/releases/latest)
+- [Red Soft](https://redos.red-soft.ru/) 的 RPM 包见[仓库](http://repo.red-soft.ru/redos/7.3/x86_64/updates/)。
+- [ALT Linux RPM](https://packages.altlinux.org/en/sisyphus/srpms/IMSProg/)。
+- [ROSA Linux RPM](https://mirror.rosalinux.ru/rosa/rosa2021.1/repository/x86_64/contrib/release/)。
+- [kjkent](https://github.com/kjkent) 维护的 [Arch AUR 包](https://aur.archlinux.org/packages/imsprog)。
+- [openSUSE 软件包](https://software.opensuse.org/package/IMSProg?search_term=imsprog)。
+- [Debian 软件包](https://tracker.debian.org/pkg/imsprog)。
+- [Anime4000](https://github.com/Anime4000) 提供的[另一 Windows 发行版](https://github.com/Anime4000/IMSProg/releases/latest)，与本分支独立。
 
+## 项目结构
 
-## Project structure
+以下为上游 Linux 安装文件布局；Windows 路径以对应构建资料为准。
 
 ```
-IMSProg _files_							          _folder_
+IMSProg _文件_							          _目录_
 ================================================================================
 IMSProg                                                  /usr/bin
 IMSProg_editor                                           /usr/bin
@@ -794,84 +730,84 @@ IMSProg_editor/other/other/io.github.bigbigmdm.imsprog_editor.metainfo.xml /usr/
 IMSProg_database_update/other/io.github.bigbigmdm.imsprog_database_update.metainfo.xml /usr/share/metainfo
 
 ```
-## Chip database format
+## 芯片数据库格式
 
-IMSProg.Dat file structure:
+`IMSProg.Dat` 文件结构：
 
-Chip string length: 0x44 (68) bytes;
+每条芯片记录长度：0x44（68）字节。以下保留所有字段偏移与编码。
 
 ```
-offset	 Size   Value
-00 -     2F     ASCII Chip type, Name and Manufacture, 0x00 filling
-30        1     NOR FLASH Chip Size code   / 0x00 - other chips
-31        1     NOR FLASH Chip ID Code     / 0x00 - other chips
-32        1     NOR FLASH Manufacture code / 0x00 - other chips
+偏移	 大小   含义
+00 -     2F     ASCII 芯片类型、型号和厂商；以 0x00 填充
+30        1     NOR FLASH 容量编码   / 0x00 - 其他芯片
+31        1     NOR FLASH 芯片 ID 编码     / 0x00 - 其他芯片
+32        1     NOR FLASH 厂商编码 / 0x00 - 其他芯片
 33              0x00
-34        4     Chip Size
+34        4     芯片容量
 35 	
 36 	  
 37
-38        2     Sector size
+38        2     扇区大小
 39
-3A        1     Binary chip type:
+3A        1     芯片类型编码：
                 - 0x00 - SPI NOR FLASH
                 - 0x01 - 24xxx I2C
                 - 0x02 - 93xxx MicroWire
                 - 0x03 - 25xxx SPI EEPROM
                 - 0x04 - 95xxx ST SPI EEPROM
                 - 0x05 - AT45DBxxx SPI EEPROM
-3B        1     Algorithm code number:
-                - SPI NOR Flash always 0x00
-                - I2C (24xxx) 0x?1 - address size 1 byte
-                - I2C (24xxx) 0x?2 - address size 2 bytes
-                - I2C (24xxx) 0x?A - address size 2 bytes, for 24LC1025
-                - I2C (24xxx) 0x?E - address size 2 bytes, for 24LC515
-                - I2C (24xxx) 0x1? - address mask 1
-                - I2C (24xxx) 0x3? - address mask 3
-                - I2C (24xxx) 0x7? - address mask 7
-                - MicroWire (93xxx) - 0x1? - organisation 16 bit
-                - MicroWire (93xxx) - 0x0? - organisation 8 bit
-                - MicroWire (93xxx) - 0x?7 -  7 bit address number
-                - MicroWire (93xxx) - 0x?9 -  9 bit address number
-                - MicroWire (93xxx) - 0x?A - 10 bit address number
-                - MicroWire (93xxx) - 0x?B - 11 bit address number
-                - 95xxx ST SPI EEPROM - 0x01 - 8 bit address
-                - 95xxx ST SPI EEPROM - 0x02 - 16 bit address
-                - 25xxx SPI EEPROM  - 0x?0 - 8 bit address
-                - 25xxx SPI EEPROM  - 0x?1 - 16 bit address
-                - 25xxx SPI EEPROM  - 0x?2 - 24 bit address
-                - 25xxx SPI EEPROM  - 0x0? - fill erasing
-                - 25xxx SPI EEPROM  - 0x1? - The third bit of the command is used for the high bit of the address
-                - 25xxx SPI EEPROM  - 0x2? - erasing with use CHIP  FULL ERASE command
-                - 45xxx SPI EEPROM  - 0x0? - ATMEL command pattern
-                - 45xxx SPI EEPROM  - 0x1? - ADESTO command pattern
-                - 45xxx SPI EEPROM  - 0x?9 -  9 bit sector address number
-                - 45xxx SPI EEPROM  - 0x?A - 10 bit sector address number
-                - 45xxx SPI EEPROM  - 0x?B - 11 bit sector address number
-                - 45xxx SPI EEPROM  - 0x?C - 12 bit sector address number
-                - 45xxx SPI EEPROM  - 0x?D - 13 bit sector address number
-                - 45xxx SPI EEPROM  - 0x?F - 15 bit sector address number
-                - SPI NOR Flash - algorithm number for working with  security registers
-                - SPI NAND Flash - algorithm number for reading status and security registers
-3C        2     Delay bus speed factor:
+3B        1     算法编号：
+                - SPI NOR Flash 固定为 0x00
+                - I2C (24xxx) 0x?1 - 地址长度 1 字节
+                - I2C (24xxx) 0x?2 - 地址长度 2 字节
+                - I2C (24xxx) 0x?A - 地址长度 2 字节, 用于 24LC1025
+                - I2C (24xxx) 0x?E - 地址长度 2 字节, 用于 24LC515
+                - I2C (24xxx) 0x1? - 地址掩码 1
+                - I2C (24xxx) 0x3? - 地址掩码 3
+                - I2C (24xxx) 0x7? - 地址掩码 7
+                - MicroWire (93xxx) - 0x1? - 16 位组织方式
+                - MicroWire (93xxx) - 0x0? - 8 位组织方式
+                - MicroWire (93xxx) - 0x?7 -  7 位地址
+                - MicroWire (93xxx) - 0x?9 -  9 位地址
+                - MicroWire (93xxx) - 0x?A - 10 位地址
+                - MicroWire (93xxx) - 0x?B - 11 位地址
+                - 95xxx ST SPI EEPROM - 0x01 - 8 位地址
+                - 95xxx ST SPI EEPROM - 0x02 - 16 位地址
+                - 25xxx SPI EEPROM  - 0x?0 - 8 位地址
+                - 25xxx SPI EEPROM  - 0x?1 - 16 位地址
+                - 25xxx SPI EEPROM  - 0x?2 - 24 位地址
+                - 25xxx SPI EEPROM  - 0x0? - 通过填充擦除
+                - 25xxx SPI EEPROM  - 0x1? - 命令的第 3 位用于地址高位
+                - 25xxx SPI EEPROM  - 0x2? - 使用 CHIP FULL ERASE 命令擦除
+                - 45xxx SPI EEPROM  - 0x0? - ATMEL 命令模式
+                - 45xxx SPI EEPROM  - 0x1? - ADESTO 命令模式
+                - 45xxx SPI EEPROM  - 0x?9 -  9 位扇区地址
+                - 45xxx SPI EEPROM  - 0x?A - 10 位扇区地址
+                - 45xxx SPI EEPROM  - 0x?B - 11 位扇区地址
+                - 45xxx SPI EEPROM  - 0x?C - 12 位扇区地址
+                - 45xxx SPI EEPROM  - 0x?D - 13 位扇区地址
+                - 45xxx SPI EEPROM  - 0x?F - 15 位扇区地址
+                - SPI NOR Flash - 访问安全寄存器的算法编号
+                - SPI NAND Flash - 读取状态和安全寄存器的算法编号
+3C        2     总线速度延迟系数：
 3D              bus_speed = default_bus_speed * Delay / 1000
-3E        2     SPI NOR Flash 4bit address type:
-                - 0x?0 - Not used (3 bit address data)
-                - 0x?1 - Used (4 bit address data)
-                - 0x01 - Default 4 bit command using
-                - 0x11 - Winbond algorithm
-                - 0x21 - Spansion algorithm
+3E        2     SPI NOR Flash 4 字节地址类型（原文称 4bit）：
+                - 0x?0 - 不使用（3 字节地址）
+                - 0x?1 - 使用（4 字节地址）
+                - 0x01 - 默认使用 4 字节地址命令
+                - 0x11 - Winbond 算法
+                - 0x21 - Spansion 算法
 3F        1     0x00
-40        1     SPI NOR FLASH block size in KB (64K = 0x40)
+40        1     SPI NOR FLASH 块大小，单位 KB（64K = 0x40）
 41        1     0x00
-42        1     - EEPROM pages 0x01 - 0x04
-                - For SPI NAND Flash - ECC Size / 64
+42        1     - EEPROM 页编码 0x01 - 0x04
+                - SPI NAND Flash：ECC Size / 64（数据库中的 OOB 大小编码）
 43        1     VCC 00=>3.3V 01=>1.8V 02=>5.0V 03=>2.5V
-The end record is 0x44 (68) zero bytes.
+末尾记录由 0x44（68）个零字节组成。
 ```
-Default bus speed:
+上游默认总线速度：
 
-| Chip type / Programmer | CH341a v1.2 | CH341a v1.7 | CH347t v1.0 | CH347T v1.1 | FH232H v1.2 |
+| 芯片类型／编程器 | CH341a v1.2 | CH341a v1.7 | CH347t v1.0 | CH347T v1.1 | FH232H v1.2 |
 | :---                   |      :---:  |     :---:   |     :---:   |    :---:    | :---:  |
 | SPI NOR Flash          |   1.6 Mhz   |     1.6 Mhz |     30 Mhz  |    15 Mhz   | 30 Mhz |
 | 25xxx EPROM            |   1.6 Mhz   |     1.6 Mhz |      5  Mhz |    5  Mhz   |  5 Mhz |
@@ -880,33 +816,24 @@ Default bus speed:
 | 45xxx DataFlash        |   1.6 Mhz   |     1.6 Mhz |      5  Mhz |    5  Mhz   |  5 Mhz |
 | SPI NAND Flash         |   1.6 Mhz   |     1.6 Mhz |     60 Mhz  |    15 Mhz   | 30 Mhz |
 
-## Licensing
+## 许可证
 
 Copyright (C) 2023 - 2026 Mikhail Medvedev.
-This project use [GPL-3+ License](https://www.gnu.org/licenses/gpl-3.0.html),
-some parts taken from project [SNANDer](https://github.com/McMCCRU/SNANDer/commits?author=McMCCRU)
-are [GPL-2+](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html) and from
-[QHexEdit2](https://github.com/Simsys/qhexedit2) is [LGPL-2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)
-and [CH347](https://github.com/981213/ch347-nor-prog/tree/master) parts is [BSD-1-Clause](https://github.com/spdx/license-list-data/blob/main/text/BSD-1-Clause.txt).
 
-## Translations
+本项目使用 [GPL-3+](https://www.gnu.org/licenses/gpl-3.0.html)，许可证正文见 [LICENSE](LICENSE)。来自 [SNANDer](https://github.com/McMCCRU/SNANDer/commits?author=McMCCRU) 的部分代码使用 [GPL-2+](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)，[QHexEdit2](https://github.com/Simsys/qhexedit2) 使用 [LGPL-2.1](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)，[CH347](https://github.com/981213/ch347-nor-prog/tree/master) 的部分代码使用 [BSD-1-Clause](https://github.com/spdx/license-list-data/blob/main/text/BSD-1-Clause.txt)。各文件中的原始版权与许可证声明保留。
 
-- Hungarian translation by [blackPantherOS](https://github.com/blackPantherOS)
-- Italian translation by Marino Pasquale and [Giovanni Scafora](https://github.com/giovanni69)
-- Brasil translation by [Alexandre C. Leite](https://github.com/alexandrecleite)
-- Ukrainian translation by [Sergey Golovko](https://github.com/cappelikan)
-- Chinese translation by [Tian-HP](https://github.com/Tian-HP)
-- German translation by [wucke13](https://github.com/wucke13)
-- Traditional Chinese translation by [ystartgo](https://github.com/ystartgo)
+## 翻译与贡献者
 
-Anyone can add or improve a translation by making a pull request.
-Translations files are located in: [IMSProg_programmer/language/](https://github.com/bigbigmdm/IMSProg/tree/main/IMSProg_programmer/language) and [IMSProg_editor/language/](https://github.com/bigbigmdm/IMSProg/tree/main/IMSProg_editor/language)
-and [IMSProg_database_update/language/](https://github.com/bigbigmdm/IMSProg/tree/main/IMSProg_database_update/language)
+- 匈牙利语：[blackPantherOS](https://github.com/blackPantherOS)。
+- 意大利语：Marino Pasquale 和 [Giovanni Scafora](https://github.com/giovanni69)。
+- 巴西葡萄牙语：[Alexandre C. Leite](https://github.com/alexandrecleite)。
+- 乌克兰语：[Sergey Golovko](https://github.com/cappelikan)。
+- 简体中文：[Tian-HP](https://github.com/Tian-HP)。
+- 德语：[wucke13](https://github.com/wucke13)。
+- 繁体中文：[ystartgo](https://github.com/ystartgo)。
 
-You can also add translation to the desktop files ([IMSProg.desktop](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_programmer/other/IMSProg.desktop),
- [IMSProg_database_update.desktop](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_programmer/other/IMSProg_database_update.desktop),
-  [IMSProg_editor.desktop](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_editor/other/IMSProg_editor.desktop)),
+上游欢迎通过 Pull Request 新增或改进翻译。翻译文件位于 [IMSProg_programmer/language/](https://github.com/bigbigmdm/IMSProg/tree/main/IMSProg_programmer/language)、[IMSProg_editor/language/](https://github.com/bigbigmdm/IMSProg/tree/main/IMSProg_editor/language) 和 [IMSProg_database_update/language/](https://github.com/bigbigmdm/IMSProg/tree/main/IMSProg_database_update/language)。
 
- and to the appstream metadata files ([io.github.bigbigmdm.imsprog_editor.metainfo.xml](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_editor/other/io.github.bigbigmdm.imsprog_editor.metainfo.xml),
-[io.github.bigbigmdm.imsprog_database_update.metainfo.xml](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_programmer/other/io.github.bigbigmdm.imsprog_database_update.metainfo.xml),
-[io.github.bigbigmdm.imsprog.metainfo.xml](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_programmer/other/io.github.bigbigmdm.imsprog.metainfo.xml)).
+还可以翻译以下桌面入口文件：[IMSProg.desktop](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_programmer/other/IMSProg.desktop)、[IMSProg_database_update.desktop](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_database_update/other/IMSProg_database_update.desktop)、[IMSProg_editor.desktop](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_editor/other/IMSProg_editor.desktop)。
+
+AppStream 元数据文件：[io.github.bigbigmdm.imsprog_editor.metainfo.xml](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_editor/other/io.github.bigbigmdm.imsprog_editor.metainfo.xml)、[io.github.bigbigmdm.imsprog_database_update.metainfo.xml](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_database_update/other/io.github.bigbigmdm.imsprog_database_update.metainfo.xml)、[io.github.bigbigmdm.imsprog.metainfo.xml](https://github.com/bigbigmdm/IMSProg/blob/main/IMSProg_programmer/other/io.github.bigbigmdm.imsprog.metainfo.xml)。

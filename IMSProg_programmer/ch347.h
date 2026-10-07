@@ -16,7 +16,9 @@ extern "C" {
 
 #include <stdint.h>
 #include <stdbool.h>
+#ifndef _WIN32
 #include <libusb.h>
+#endif
 #if defined(_WIN32)
     #include <winsock2.h>
     #include <windows.h>
@@ -37,8 +39,8 @@ extern "C" {
 #define CH347_SPI_VID 0x1a86
 #define CH347_SPI_PID 0x55db
 #define CH347_SPI_IF 2
-#define CH347_EPOUT (6 | LIBUSB_ENDPOINT_OUT)
-#define CH347_EPIN (6 | LIBUSB_ENDPOINT_IN)
+#define CH347_EPOUT 0x06
+#define CH347_EPIN 0x86
 
 #define CH347_SPI_MAX_FREQ 60000
 #define CH347_SPI_MAX_PRESCALER 7
@@ -122,8 +124,12 @@ struct ch347_spi_hw_config {
 
 struct ch347_priv {
     struct ch347_spi_hw_config cfg;
+#ifdef _WIN32
+    void *windows_backend;
+#else
     libusb_context *ctx;
     libusb_device_handle *handle;
+#endif
     uint8_t tmpbuf[510];//tmpbuf[509];//tmpbuf[8192];  // old - 512
 };
 
