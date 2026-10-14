@@ -37,8 +37,29 @@ extern "C" {
 #endif
 
 #define CH347_SPI_VID 0x1a86
-#define CH347_SPI_PID 0x55db
-#define CH347_SPI_IF 2
+/* CH347T mode 1 (UART1+SPI+I2C): SPI/I2C vendor interface 2. */
+#define CH347T_SPI_PID 0x55db
+#define CH347T_SPI_IF 2
+/* CH347F (UART0+UART1+SPI/I2C/JTAG): SPI/I2C vendor interface 4.
+ * Both chips use the same bulk endpoints and the same SPI/I2C packet protocol. */
+#define CH347F_SPI_PID 0x55de
+#define CH347F_SPI_IF 4
+/* Backward-compatible names (CH347T). */
+#define CH347_SPI_PID CH347T_SPI_PID
+#define CH347_SPI_IF CH347T_SPI_IF
+
+/* CH347 chip variants selectable by the application. */
+enum ch347_model {
+    CH347_MODEL_T = 0,
+    CH347_MODEL_F = 1
+};
+
+static inline int ch347_model_valid(int model) { return model == CH347_MODEL_T || model == CH347_MODEL_F; }
+static inline uint16_t ch347_model_pid(int model) { return model == CH347_MODEL_F ? CH347F_SPI_PID : CH347T_SPI_PID; }
+static inline int ch347_model_interface(int model) { return model == CH347_MODEL_F ? CH347F_SPI_IF : CH347T_SPI_IF; }
+static inline const char *ch347_model_name(int model) { return model == CH347_MODEL_F ? "CH347F" : "CH347T"; }
+/* WCH CH347DLL device-info ChipMode: 1 = CH347T mode 1, 4 = CH347F. */
+static inline int ch347_model_wch_chip_mode(int model) { return model == CH347_MODEL_F ? 4 : 1; }
 #define CH347_EPOUT 0x06
 #define CH347_EPIN 0x86
 
@@ -124,6 +145,8 @@ struct ch347_spi_hw_config {
 
 struct ch347_priv {
     struct ch347_spi_hw_config cfg;
+    int model;          /* enum ch347_model opened by ch347_open() */
+    int usb_interface;  /* claimed SPI/I2C interface (native libusb only) */
 #ifdef _WIN32
     void *windows_backend;
 #else
@@ -132,6 +155,11 @@ struct ch347_priv {
 #endif
     uint8_t tmpbuf[510];//tmpbuf[509];//tmpbuf[8192];  // old - 512
 };
+
+/* Select the CH347 variant used by the next ch347_open()/ch347_spi_init().
+ * Invalid values fall back to CH347T. */
+void ch347_select_model(int model);
+int ch347_selected_model(void);
 
 struct ch347_priv *ch347_open();
 

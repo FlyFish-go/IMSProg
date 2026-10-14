@@ -1,6 +1,6 @@
 # Windows x64 SPI build
 
-Experimental SPI support for CH341A/B and CH347T. FT232H, I2C and MicroWire remain
+Experimental SPI support for CH341A/B, CH347T and CH347F. FT232H, I2C and MicroWire remain
 disabled on Windows. This repository provides source and hardware-free tests;
 it does not include an EXE, Qt runtime, WCH DLL or driver.
 
@@ -39,9 +39,12 @@ build excludes the separate database editor and updater.
 
 ## Connection and first use
 
-- Select CH341A/B or CH347T explicitly in the Programmer menu. Only one device
+- Select CH341A/B, CH347T or CH347F explicitly in the Programmer menu. Only one device
   of the selected family may be attached. CH341 SPI IDs are `1A86:5512` and
-  `4348:5512`; CH347T mode 1 is `1A86:55DB`. USB IDs do not distinguish A/B silicon.
+  `4348:5512`; CH347T mode 1 is `1A86:55DB`; CH347F is `1A86:55DE` (SPI/I2C on
+  interface 4). USB IDs do not distinguish A/B silicon. CH347T and CH347F are
+  selected separately and never used as a fallback for each other. With the WCH
+  DLL backend, CH347F must report `ChipMode=4`.
 - The backend first tries libusb with the existing driver. It does not install,
   replace, detach or reset drivers. Do not change a working driver just to try
   this build, and do not copy DLLs into System32.

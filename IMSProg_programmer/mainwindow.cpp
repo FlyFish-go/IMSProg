@@ -178,6 +178,12 @@ MainWindow::MainWindow(QWidget *parent) :
               SetItemStatus("comboBox_type", 2, true);
           }
        if (current_programmer == 4) ui->actionFT232H_v1_2->setChecked(true);
+       if (current_programmer == 5)
+          {
+              ui->actionCH347F->setChecked(true);
+              SetItemStatus("comboBox_type", 2, true);
+          }
+       if (current_programmer > 5) current_programmer = 0;
      settings.endGroup();
      settings.beginGroup("FormPosition");
      if (settings.contains("geometry"))
@@ -191,6 +197,7 @@ MainWindow::MainWindow(QWidget *parent) :
  if (current_programmer < 2) ui->lStatus->setText("CH341A/B");
  if ((current_programmer == 2) || (current_programmer == 3)) ui->lStatus->setText("CH347T");
  if (current_programmer == 4) ui->lStatus->setText("FT232H");
+ if (current_programmer == 5) ui->lStatus->setText("CH347F");
  statusCH341 = ProgDeviceInit(current_programmer, currentChipType,
      currentChipType == 1 ? currentI2CBusSpeed : getInterfaceSpeed(current_programmer, currentChipType, currentDelay));
  ch341StatusFlashing();
@@ -333,13 +340,13 @@ void MainWindow::on_pushButton_clicked()
                  res = snor_read_param(buf.get(), curBlock * step, step, step, currentAddr4bit, current_programmer);
               break;
               case 1:            //I2C
-                   if (current_programmer < 4) res = ch34xi2cBlockRead(buf.get(), curBlock * step, step, currentAlgorithm, current_programmer);
+                   if (current_programmer != 4) res = ch34xi2cBlockRead(buf.get(), curBlock * step, step, currentAlgorithm, current_programmer);
                    else res = ft232I2cBlockRead(buf.get(), curBlock * step, step, currentAlgorithm);
                    if (res==0) res = 1;
               break;
               case 2:
                  //MicroWire
-                   if (current_programmer < 4) res = Read_EEPROM_3wire_param(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), static_cast<int>(currentChipSize), currentAlgorithm);
+                   if (current_programmer != 4) res = Read_EEPROM_3wire_param(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), static_cast<int>(currentChipSize), currentAlgorithm);
                    else res = ft232MWReadBlock(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), currentAlgorithm);
                    if (res==0) res = 1;
               break;
@@ -883,7 +890,7 @@ void MainWindow::on_actionErase_triggered()
         config_stream(1);
         mw_gpio_init();
         ui->progressBar->setValue(50);
-        if (current_programmer < 4) Erase_EEPROM_3wire_param(currentAlgorithm);
+        if (current_programmer != 4) Erase_EEPROM_3wire_param(currentAlgorithm);
         else ft232hMWEraseAll(currentAlgorithm);
         imsprog_sleep(1);
     }
@@ -904,7 +911,7 @@ void MainWindow::on_actionErase_triggered()
         }
         for (curBlock = 0; curBlock < numBlocks; curBlock++)
         {
-            if (current_programmer < 4) res = ch34xi2cBlockWrite(buf.get(), curBlock * step, step, currentPageSize, currentAlgorithm, current_programmer);
+            if (current_programmer != 4) res = ch34xi2cBlockWrite(buf.get(), curBlock * step, step, currentPageSize, currentAlgorithm, current_programmer);
             else res = ft232I2cBlockWrite(buf.get(), curBlock * step, step, currentPageSize, currentAlgorithm);
             if (res==0) res = 1;
             qApp->processEvents();
@@ -1225,13 +1232,13 @@ void MainWindow::on_actionWrite_triggered()
                        break;
                        case 1:                           //I2C
                           addrSrc = addrSrc + step;
-                           if (current_programmer < 4) res = ch34xi2cBlockWrite(buf.get(), curBlock * step, step, currentPageSize, currentAlgorithm, current_programmer);
+                           if (current_programmer != 4) res = ch34xi2cBlockWrite(buf.get(), curBlock * step, step, currentPageSize, currentAlgorithm, current_programmer);
                            else res = ft232I2cBlockWrite(buf.get(), curBlock * step, step, currentPageSize, currentAlgorithm);
                           if (res==0) res = 1;
                        break;
                        case 2:                           //MicroWire
                           addrSrc = addrSrc + step;
-                          if (current_programmer < 4) res = Write_EEPROM_3wire_param(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), static_cast<int>(currentChipSize), currentAlgorithm);
+                          if (current_programmer != 4) res = Write_EEPROM_3wire_param(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), static_cast<int>(currentChipSize), currentAlgorithm);
                           else res = ft232MWWriteBlock(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), currentAlgorithm);
                           if (res==0) res = 1;
                        break;
@@ -1556,13 +1563,13 @@ void MainWindow::on_actionVerify_triggered()
                       break;
                       case 1:
                          //I2C
-                          if (current_programmer < 4) res = ch34xi2cBlockRead(buf.get(), curBlock * step, step, currentAlgorithm, current_programmer);
+                          if (current_programmer != 4) res = ch34xi2cBlockRead(buf.get(), curBlock * step, step, currentAlgorithm, current_programmer);
                           else res = ft232I2cBlockRead(buf.get(), curBlock * step, step, currentAlgorithm);
                          if (res==0) res = 1;
                       break;
                       case 2:
                          //MicroWire
-                         if (current_programmer < 4) res = Read_EEPROM_3wire_param(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), static_cast<int>(currentChipSize), currentAlgorithm);
+                         if (current_programmer != 4) res = Read_EEPROM_3wire_param(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), static_cast<int>(currentChipSize), currentAlgorithm);
                          else res = ft232MWReadBlock(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), currentAlgorithm);
                          if (res==0) res = 1;
                       break;
@@ -2136,6 +2143,7 @@ void MainWindow::doNotDisturb()
    ui->actionCH341A_v1_7->setDisabled(true);
    ui->actionCH347T->setDisabled(true);
    ui->actionCH347T_v1_1->setDisabled(true);
+   ui->actionCH347F->setDisabled(true);
    ui->actionShow_programmer_version->setDisabled(true);
    ui->actionConnection_diagnostics->setDisabled(true);
 
@@ -2196,6 +2204,7 @@ void MainWindow::doNotDisturbCancel()
    ui->actionCH341A_v1_7->setDisabled(false);
    ui->actionCH347T->setDisabled(false);
    ui->actionCH347T_v1_1->setDisabled(false);
+   ui->actionCH347F->setDisabled(false);
    ui->actionShow_programmer_version->setDisabled(false);
    ui->actionConnection_diagnostics->setDisabled(false);
    if ((currentChipType == 0) || (currentChipType == 6) || (currentChipType > 2)) ui->actionChip_info->setDisabled(false);
@@ -2879,6 +2888,15 @@ void MainWindow::on_actionCH347T_v1_1_triggered()
     SetItemStatus("comboBox_vcc", 3, false);
 }
 
+void MainWindow::on_actionCH347F_triggered()
+{
+    // CH347F (USB 1A86:55DE, SPI/I2C on interface 4). Same SPI/I2C protocol as CH347T.
+    current_programmer = 5;
+    ui->lStatus->setText("CH347F");
+    SetItemStatus("comboBox_type", 2, true);
+    SetItemStatus("comboBox_vcc", 3, false);
+}
+
 void MainWindow::on_actionFT232H_v1_2_triggered()
 {
     current_programmer = 4;
@@ -3063,13 +3081,13 @@ void MainWindow::on_actionCheck_erase_triggered()
                       break;
                       case 1:
                          //I2C
-                         if (current_programmer < 4) res = ch34xi2cBlockRead(buf.get(), curBlock * step, step, currentAlgorithm, current_programmer);
+                         if (current_programmer != 4) res = ch34xi2cBlockRead(buf.get(), curBlock * step, step, currentAlgorithm, current_programmer);
                          else res = ft232I2cBlockRead(buf.get(), curBlock * step, step, currentAlgorithm);
                          if (res==0) res = 1;
                       break;
                       case 2:
                          //MicroWire
-                         if (current_programmer < 4) res = Read_EEPROM_3wire_param(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), static_cast<int>(currentChipSize), currentAlgorithm);
+                         if (current_programmer != 4) res = Read_EEPROM_3wire_param(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), static_cast<int>(currentChipSize), currentAlgorithm);
                          else res = ft232MWReadBlock(buf.get(), static_cast<int>(curBlock * step), static_cast<int>(step), currentAlgorithm);
                          if (res==0) res = 1;
                       break;
@@ -3410,7 +3428,7 @@ void MainWindow::applyPlatformRestrictions()
     ui->actionConnection_diagnostics->setVisible(false);
 #ifdef _WIN32
     ui->actionConnection_diagnostics->setVisible(true);
-    if (current_programmer > 3) current_programmer = 2;
+    if (current_programmer == 4 || current_programmer > 5) current_programmer = 2;
     ui->actionCH341A_B_v1_2->setEnabled(true);
     ui->actionCH341A_v1_7->setEnabled(true);
     ui->actionCH341A_B_v1_2->setText(tr("CH341A/B (SPI)"));
@@ -3423,9 +3441,10 @@ void MainWindow::applyPlatformRestrictions()
     ui->actionShow_programmer_version->setEnabled(false);
     ui->actionCH347T->setChecked(current_programmer == 2);
     ui->actionCH347T_v1_1->setChecked(current_programmer == 3);
+    ui->actionCH347F->setChecked(current_programmer == 5);
     SetItemStatus("comboBox_type", 1, true); // I2C is not included in this Windows port.
     SetItemStatus("comboBox_type", 2, true); // MicroWire is not included.
-    setWindowTitle(tr("IMSProg ECC/OOB v4 - CH341A/B + CH347T Windows SPI"));
+    setWindowTitle(tr("IMSProg ECC/OOB v4 - CH341A/B + CH347T/F Windows SPI"));
 #endif
 }
 
@@ -3447,6 +3466,7 @@ void MainWindow::on_actionConnection_diagnostics_triggered()
     const bool timerWasActive = timer->isActive();
     timer->stop();
     // Backend enumeration only: no SPI setup, NAND command or driver change.
+    if (current_programmer >= 2) ch347_select_model(current_programmer == 5 ? CH347_MODEL_F : CH347_MODEL_T);
     if (current_programmer < 2) ch341_windows_diagnose();
     else ch347_windows_diagnose();
     const QString report = QString::fromUtf8(ch347_windows_last_report());

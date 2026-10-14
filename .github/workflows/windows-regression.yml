@@ -24,6 +24,7 @@ jobs:
           sh tests/run_ch341_spi_tests.sh
           sh tests/run_ch341_async_tests.sh
           sh tests/run_ch347_transport_tests.sh
+          sh tests/run_ch347_model_tests.sh
           sh tests/run_usb_descriptor_tests.sh
           sh tests/run_windows_backend_tests.sh
           python3 tests/ui_windows_conformance.py

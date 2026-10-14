@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-1-Clause
- * CH347T Windows transport: existing-driver libusb, then WCH vendor fallback.
+ * CH347T/CH347F Windows transport: existing-driver libusb, then WCH vendor fallback.
  * ABI reference: WCHSoftGroup/ch347, OpenOCD_SourceCode_CH347/src/jtag/drivers/ch347.c.
  * No driver install, replacement, reset or kernel-driver detach is performed.
  */
@@ -68,7 +68,7 @@ typedef const char *(LIBUSB_CALL *usb_error_name_fn)(int);
 
 struct windows_backend {
     int kind; /* 0: WCH vendor DLL; 1: libusb over the existing Windows driver. */
-    int family; /* 0: CH347T; 1: CH341A/B parallel/SPI. Never changes after open. */
+    int family; /* 0: CH347T/F (selected model); 1: CH341A/B parallel/SPI. Never changes after open. */
     unsigned char out_endpoint, in_endpoint;
     wch341_close_fn close341;
     wch_io_fn descriptor341;
@@ -105,11 +105,24 @@ struct windows_backend {
 };
 
 enum { FAMILY_CH347 = 0, FAMILY_CH341 = 1 };
-static const char *family_name(int family) { return family == FAMILY_CH341 ? "CH341A/B" : "CH347T"; }
+/* CH347 variant chosen by the user. CH347T and CH347F are never fallback targets for each other. */
+static int selected_ch347_model = CH347_MODEL_T;
+void ch347_windows_select_model(int model)
+{
+    selected_ch347_model = ch347_model_valid(model) ? model : CH347_MODEL_T;
+}
+static const char *family_name(int family)
+{
+    return family == FAMILY_CH341 ? "CH341A/B" : ch347_model_name(selected_ch347_model);
+}
 static int family_matches(int family, uint16_t vid, uint16_t pid)
 {
     return family == FAMILY_CH341 ? (pid == 0x5512 && (vid == 0x1a86 || vid == 0x4348))
-                                  : (vid == CH347_SPI_VID && pid == CH347_SPI_PID);
+                                  : (vid == CH347_SPI_VID && pid == ch347_model_pid(selected_ch347_model));
+}
+static const char *ch347_required_ids(void)
+{
+    return selected_ch347_model == CH347_MODEL_F ? "VID_1A86 PID_55DE (CH347F)" : "VID_1A86 PID_55DB (mode 1)";
 }
 
 /* No serial number, full device path or unrelated USB devices are recorded. */
@@ -193,7 +206,7 @@ static void begin_connection_report(int diagnostic_only, int family)
     }
     report_append("Selected family: %s. Family-specific matching only; another family is never a fallback target.\n", family_name(family));
     report_append("Required IDs: %s. Existing-driver libusb first; WCH vendor fallback only before SPI I/O.\n",
-                  family == FAMILY_CH341 ? "VID_1A86 or VID_4348, PID_5512 (parallel/SPI mode)" : "VID_1A86 PID_55DB (mode 1)");
+                  family == FAMILY_CH341 ? "VID_1A86 or VID_4348, PID_5512 (parallel/SPI mode)" : ch347_required_ids());
 }
 
 static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
@@ -201,8 +214,12 @@ static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
     struct windows_backend *b;
     int found = 0, opened_count = 0, rejected_count = 0, info_errors = 0;
     int failure = -ENODEV;
+    const int model = selected_ch347_model;
+    char pid_text[16];
     if (!p) { report_error("Open: invalid device context."); return -EINVAL; }
-    report_append("Trying official WCH vendor backend (class 0, SPI/I2C function 1).\n");
+    snprintf(pid_text, sizeof(pid_text), "PID_%04X", ch347_model_pid(model));
+    report_append("Trying official WCH vendor backend (class 0, SPI/I2C function 1, %s ChipMode %d).\n",
+                  ch347_model_name(model), ch347_model_wch_chip_mode(model));
     b = (struct windows_backend *)calloc(1, sizeof(*b));
     if (!b) { report_error("Open: out of memory."); return -ENOMEM; }
     b->family = FAMILY_CH347;
@@ -253,8 +270,8 @@ static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
         report_append("Index %lu: ID=%s; UsbClass=%u FuncType=%u ChipMode=%u Interface=%u; EP in=0x%02X out=0x%02X; firmware=0x%02X.\n",
                       i, info.DeviceID, info.UsbClass, info.FuncType, info.ChipMode,
                       info.CH347IfNum, info.DataUpEndp, info.DataDnEndp, info.FirewareVer);
-        if (info.UsbClass != 0 || info.FuncType != 1 || info.ChipMode != 1 ||
-            !strstr(info.DeviceID, "VID_1A86") || !strstr(info.DeviceID, "PID_55DB")) {
+        if (info.UsbClass != 0 || info.FuncType != 1 || info.ChipMode != ch347_model_wch_chip_mode(model) ||
+            !strstr(info.DeviceID, "VID_1A86") || !strstr(info.DeviceID, pid_text)) {
             ++rejected_count;
             report_append("Index %lu: excluded by this port's mode/driver/function/VID-PID filter.\n", i);
             b->close(i);
@@ -262,7 +279,7 @@ static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
         }
         if (found) {
             b->close(i);
-            report_error("Enumeration: multiple matching CH347T interfaces; connect only the intended programmer.");
+            report_error("Enumeration: multiple matching %s interfaces; connect only the intended programmer.", ch347_model_name(model));
             failure = -EEXIST;
             goto fail;
         }
@@ -272,8 +289,8 @@ static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
         report_append("Index %lu: accepted by filter.\n", i);
     }
     if (!found) {
-        report_error("Enumeration: no matching CH347T mode 1 interface. Opened=%d, GetDeviceInfor failures=%d, excluded=%d. This does not by itself prove a wrong driver; inspect the report and Device Manager.",
-                     opened_count, info_errors, rejected_count);
+        report_error("Enumeration: no matching %s interface. Opened=%d, GetDeviceInfor failures=%d, excluded=%d. This does not by itself prove a wrong driver; inspect the report and Device Manager.",
+                     model == CH347_MODEL_F ? "CH347F" : "CH347T mode 1", opened_count, info_errors, rejected_count);
         goto fail;
     }
     if (!diagnostic_only) {

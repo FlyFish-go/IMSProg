@@ -29,8 +29,10 @@ def require(condition, message):
 
 platform = body("applyPlatformRestrictions")
 windows = platform[platform.index("#ifdef _WIN32"):]
-require("current_programmer > 3" in windows,
-        "valid CH341 indices 0/1 must not be normalized into CH347")
+require("current_programmer == 4 || current_programmer > 5" in windows,
+        "valid CH341 indices 0/1 and CH347T/F indices 2/3/5 must not be normalized")
+require("ui->actionCH347F->setChecked(current_programmer == 5)" in windows,
+        "CH347F checked action tracks exact selected index")
 for index, action in enumerate(("actionCH341A_B_v1_2", "actionCH341A_v1_7")):
     require(f"ui->{action}->setEnabled(true)" in windows, "CH341 selector available on Windows")
     require(f"ui->{action}->setChecked(current_programmer == {index})" in windows,
@@ -43,7 +45,7 @@ for action in ("actionFT232H_v1_2", "actionShow_programmer_version"):
 for callback in ("on_actionCH341A_B_v1_2_triggered", "on_actionCH341A_v1_7_triggered"):
     require("applyPlatformRestrictions();" in body(callback),
             "CH341 callback reapplies restrictions after inherited MicroWire enable")
-for action in ("actionCH341A_B_v1_2", "actionCH341A_v1_7", "actionCH347T", "actionCH347T_v1_1"):
+for action in ("actionCH341A_B_v1_2", "actionCH341A_v1_7", "actionCH347T", "actionCH347T_v1_1", "actionCH347F"):
     require(f"ui->{action}->setDisabled(true)" in body("doNotDisturb"),
             "all programmer selectors remain locked during I/O")
 require("applyPlatformRestrictions();" in body("doNotDisturbCancel"),
@@ -51,6 +53,8 @@ require("applyPlatformRestrictions();" in body("doNotDisturbCancel"),
 diag = body("on_actionConnection_diagnostics_triggered")
 require(re.search(r'if\s*\(current_programmer\s*<\s*2\)\s*ch341_windows_diagnose\(\);\s*else\s*ch347_windows_diagnose\(\);', diag),
         "diagnostics explicitly routes by the user's selected family")
+require("ch347_select_model(current_programmer == 5 ? CH347_MODEL_F : CH347_MODEL_T)" in diag,
+        "diagnostics enumerates only the selected CH347 variant")
 require("if (ui->actionStop->isEnabled()) return;" in diag and "timer->stop();" in diag,
         "diagnostics refuses concurrent I/O and pauses timer")
 ui = ET.parse(root / "IMSProg_programmer/mainwindow.ui")

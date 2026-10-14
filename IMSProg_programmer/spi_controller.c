@@ -53,9 +53,15 @@ int ProgDeviceInit( u8 deviceType, u8 chipType, u16 speed )
             ret = ch341a_init(chipType, speed);
             break;
         case 2: // CH347T v1.0
+            ch347_select_model(CH347_MODEL_T);
             ret = ch347_spi_init(chipType, speed);
             break;
         case 3: // CH347T v1.1
+            ch347_select_model(CH347_MODEL_T);
+            ret = ch347_spi_init(chipType, speed);
+            break;
+        case 5: // CH347F
+            ch347_select_model(CH347_MODEL_F);
             ret = ch347_spi_init(chipType, speed);
             break;
         case 4: // FT232H v1.2
@@ -88,6 +94,7 @@ int ProgDeviceClose( u8 deviceType )
         ch347_spi_shutdown();
         ret = 0;
         break;
+    case 5: // CH347F
     case 3: // CH347T v1.1
         ch347_spi_shutdown();
         ret = 0;
@@ -116,6 +123,7 @@ int getDeviceDescriptor(u8 *data, u8 deviceType)
     case 2: // CH347T v1.0
         ch347GetDescriptor(data);
         break;
+    case 5: // CH347F
     case 3: // CH347T v1.1
         ch347GetDescriptor(data);
         break;
@@ -139,7 +147,7 @@ uint16_t getInterfaceSpeed(u8 deviceType, u8 chipType, u16 delay)
         {30000,   400,  1600,  5000,  5000,  5000, 60000}, // CH347T v1.0
         {15000,   400,  1600,  5000,  5000,  5000, 15000}, // CH347T v1.1
         {30000,   400,  1600,  5000,  5000,  5000, 30000}, // FT232H v1.2
-        {30000,   400,  1600,  5000,  5000,  5000, 30000}  // Reserved
+        {30000,   400,  1600,  5000,  5000,  5000, 30000}  // CH347F
     };
     if ((delay > 40) && (delay < 2100)) interfaceSpeed = defaultSpeed[deviceType][chipType] * delay / 1000;
     else interfaceSpeed = defaultSpeed[deviceType][chipType];
@@ -166,6 +174,7 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Write_One_Byte( u8  data, u8 deviceType )
     case 2: // CH347T v1.0
         return (SPI_CONTROLLER_RTN_T)ch347_spi_tx(priv, &data, 1);
         break;
+    case 5: // CH347F
     case 3: // CH347T v1.1
         return (SPI_CONTROLLER_RTN_T)ch347_spi_tx(priv, &data, 1);
         break;
@@ -188,6 +197,7 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Chip_Select_High( u8 deviceType )
     case 2: // CH347T v1.0
         return (SPI_CONTROLLER_RTN_T)ch347_set_cs(priv, 0, 1);
         break;
+    case 5: // CH347F
     case 3: // CH347T v1.1
         return (SPI_CONTROLLER_RTN_T)ch347_set_cs(priv, 0, 1);
         break;
@@ -210,6 +220,7 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Chip_Select_Low( u8 deviceType )
     case 2: // CH347T v1.0
         return (SPI_CONTROLLER_RTN_T)ch347_set_cs(priv, 0, 0);
         break;
+    case 5: // CH347F
     case 3: // CH347T v1.1
         return (SPI_CONTROLLER_RTN_T)ch347_set_cs(priv, 0, 0);
         break;
@@ -232,6 +243,7 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Read_NByte( u8 *ptr_rtn_data, u32 len, SPI_C
     case 2: // CH347T v1.0
         return (SPI_CONTROLLER_RTN_T)ch347_spi_rx(priv, ptr_rtn_data, len);
         break;
+    case 5: // CH347F
     case 3: // CH347T v1.1
         return (SPI_CONTROLLER_RTN_T)ch347_spi_rx(priv, ptr_rtn_data, len);
         break;
@@ -254,6 +266,7 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Write_NByte( u8 *ptr_data, u32 len, SPI_CONT
     case 2: // CH347T v1.0
         return (SPI_CONTROLLER_RTN_T)ch347_spi_tx(priv, ptr_data, len);
         break;
+    case 5: // CH347F
     case 3: // CH347T v1.1
         return (SPI_CONTROLLER_RTN_T)ch347_spi_tx(priv, ptr_data, len);
         break;

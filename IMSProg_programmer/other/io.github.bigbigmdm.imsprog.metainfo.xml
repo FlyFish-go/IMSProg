@@ -119,6 +119,7 @@
      <mediatype>application/octet-stream</mediatype>
      <modalias>usb:v1A86p5512d*</modalias>
      <modalias>usb:v1A86p55DBd*</modalias>
+     <modalias>usb:v1A86p55DEd*</modalias>
      <modalias>usb:v0403p6014d*</modalias>
   </provides>
   <developer id="io.github.bigbigmdm">

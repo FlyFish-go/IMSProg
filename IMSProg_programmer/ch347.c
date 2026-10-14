@@ -36,6 +36,20 @@ static int ch347_bulk_transfer(struct ch347_priv *p, unsigned char endpoint,
 #endif
 
 struct ch347_priv *priv = NULL;
+static int ch347_current_model = CH347_MODEL_T;
+
+void ch347_select_model(int model)
+{
+    ch347_current_model = ch347_model_valid(model) ? model : CH347_MODEL_T;
+#ifdef _WIN32
+    ch347_windows_select_model(ch347_current_model);
+#endif
+}
+
+int ch347_selected_model(void)
+{
+    return ch347_current_model;
+}
 
 int ch347_spi_write_packet(struct ch347_priv *priv, uint8_t cmd, const void *tx, int len) {
     uint8_t *ptr;
@@ -320,6 +334,8 @@ struct ch347_priv *ch347_open() {
         fprintf(stderr, "ch347: faied to allocate memory.\n");
         return NULL;
     }
+    priv->model = ch347_current_model;
+    priv->usb_interface = ch347_model_interface(priv->model);
 #ifdef _WIN32
     if (ch347_windows_open(priv) != 0) {
         free(priv);
@@ -343,16 +359,18 @@ struct ch347_priv *ch347_open() {
 #if LIBUSBX_API_VERSION >= 0x01000106
     libusb_set_option(priv->ctx, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_INFO);
 #endif
-    priv->handle = libusb_open_device_with_vid_pid(priv->ctx, CH347_SPI_VID, CH347_SPI_PID);
+    priv->handle = libusb_open_device_with_vid_pid(priv->ctx, CH347_SPI_VID, ch347_model_pid(priv->model));
     if (!priv->handle) {
-        perror("ch347: libusb: open");
+        fprintf(stderr, "ch347: libusb: cannot open %s (%04x:%04x)\n", ch347_model_name(priv->model),
+                CH347_SPI_VID, ch347_model_pid(priv->model));
         goto ERR_1;
     }
 
     libusb_set_auto_detach_kernel_driver(priv->handle, 1);
-    ret = libusb_claim_interface(priv->handle, CH347_SPI_IF);
+    ret = libusb_claim_interface(priv->handle, priv->usb_interface);
     if (ret < 0) {
-        perror("ch347: libusb: claim_if");
+        fprintf(stderr, "ch347: libusb: %s claim interface %d failed: %s\n", ch347_model_name(priv->model),
+                priv->usb_interface, libusb_error_name(ret));
         goto ERR_2;
     }
 
@@ -362,7 +380,7 @@ struct ch347_priv *ch347_open() {
     return priv;
 
     ERR_3:
-    libusb_release_interface(priv->handle, CH347_SPI_IF);
+    libusb_release_interface(priv->handle, priv->usb_interface);
     ERR_2:
     libusb_close(priv->handle);
     ERR_1:
@@ -378,7 +396,7 @@ void ch347_close(struct ch347_priv *priv) {
 #ifdef _WIN32
     ch347_windows_close(priv);
 #else
-    libusb_release_interface(priv->handle, CH347_SPI_IF);
+    libusb_release_interface(priv->handle, priv->usb_interface);
     libusb_close(priv->handle);
     libusb_exit(priv->ctx);
 #endif

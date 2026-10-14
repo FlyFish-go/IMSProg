@@ -10,6 +10,8 @@ extern "C" {
 const char *ch347_windows_last_error(void);
 const char *ch347_windows_last_report(void);
 int ch347_windows_diagnose(void);
+/* Select the CH347 variant (enum ch347_model) for open and diagnostics. */
+void ch347_windows_select_model(int model);
 void ch347_windows_set_error_stage(const char *stage, int error_code);
 int ch347_windows_open(struct ch347_priv *p);
 int ch341_windows_open(struct ch347_priv *p);

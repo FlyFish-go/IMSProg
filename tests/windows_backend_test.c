@@ -22,7 +22,7 @@ struct fake_state {
     int async_calls, async_result;
     const char *missing_export;
     int wch_present[32], wch_bad_info[32];
-    int wch_wrong_mode, wch_timeout_result, wch_io_result, wch_actual;
+    int wch_wrong_mode, wch_ch347f, wch_timeout_result, wch_io_result, wch_actual;
     int wch_loads, wch_opens, wch_closes, wch_timeouts, wch_reads, wch_writes;
     int usb_loads, usbk_loads, frees;
     int usb_count, usb_init_result, usb_list_result, usb_open_result, usb_claim_result, usb_alt_result;
@@ -116,8 +116,8 @@ static BOOL fake_wch_info(ULONG index, wch_device_info *info)
 {
     if (f.wch_bad_info[index]) return FALSE;
     memset(info, 0, sizeof(*info));
-    strcpy(info->DeviceID, "USB\\VID_1A86&PID_55DB");
-    info->FuncType = 1; info->ChipMode = f.wch_wrong_mode ? 3 : 1;
+    strcpy(info->DeviceID, f.wch_ch347f ? "USB\\VID_1A86&PID_55DE&MI_04" : "USB\\VID_1A86&PID_55DB");
+    info->FuncType = 1; info->ChipMode = f.wch_wrong_mode ? 3 : (f.wch_ch347f ? 4 : 1);
     info->CH347IfNum = 7; info->DataDnEndp = 0x06; info->DataUpEndp = 0x86;
     return TRUE;
 }
@@ -327,6 +327,31 @@ int main(void)
           strstr(ch347_windows_last_error(), "WCH:") != NULL &&
           strstr(ch347_windows_last_error(), "libusb_open failed") != NULL &&
           strstr(ch347_windows_last_error(), "no matching CH347T") != NULL);
+
+    /* CH347F (1A86:55DE): selected explicitly; never matched by the CH347T selection and vice versa. */
+    ch347_windows_select_model(CH347_MODEL_F);
+    reset(); f.usb_count = 1; f.descriptors[0].idProduct = CH347F_SPI_PID;
+    f.alternatives[0][0].bInterfaceNumber = CH347F_SPI_IF;
+    CHECK(ch347_windows_open(&p) == 0 && f.usb_claim_calls == 1 && f.claimed_interface == CH347F_SPI_IF);
+    CHECK(strstr(ch347_windows_last_report(), "CH347F") != NULL && strstr(ch347_windows_last_report(), "PID_55DE") != NULL);
+    ch347_windows_close(&p);
+    reset(); f.usb_count = 1; /* a CH347T is attached while CH347F is selected */
+    CHECK(ch347_windows_open(&p) != 0 && f.usb_open_calls == 0 && f.usb_claim_calls == 0 && !p.windows_backend);
+    reset(); f.wch_present[0] = 1; f.wch_ch347f = 1;
+    CHECK(ch347_windows_open(&p) == 0 && f.wch_timeouts == 1);
+    ch347_windows_close(&p);
+    reset(); f.wch_present[0] = 1; /* WCH reports CH347T mode 1 */
+    CHECK(ch347_windows_open(&p) != 0 && f.wch_timeouts == 0 &&
+          strstr(ch347_windows_last_error(), "no matching CH347F") != NULL);
+    reset(); f.wch_present[0] = f.wch_present[1] = 1; f.wch_ch347f = 1;
+    CHECK(ch347_windows_open(&p) == -EEXIST && !p.windows_backend);
+    reset(); f.usb_count = 1; f.descriptors[0].idProduct = CH347F_SPI_PID;
+    CHECK(ch347_windows_diagnose() == 0 && f.usb_claim_calls == 0 && f.usb_bulk_calls == 0);
+    ch347_windows_select_model(CH347_MODEL_T);
+    reset(); f.usb_count = 1; f.descriptors[0].idProduct = CH347F_SPI_PID;
+    CHECK(ch347_windows_open(&p) != 0 && f.usb_open_calls == 0 && !p.windows_backend);
+    reset(); f.wch_present[0] = 1; f.wch_ch347f = 1;
+    CHECK(ch347_windows_open(&p) != 0 && f.wch_timeouts == 0);
 
     reset(); f.usb_count = 1; f.usb_open_result = LIBUSB_ERROR_ACCESS; f.wch_present[0] = 1;
     CHECK(ch347_windows_diagnose() == 0);

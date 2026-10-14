@@ -25,7 +25,7 @@
 
 ## Windows 增强功能
 
-Windows x64 版本支持 CH341A/B 和 CH347T 的 SPI 操作，保留 libusb／libusbK 路径及可选的 WCH 官方后端源码。Windows 下暂不支持 FT232H、I2C 和 MicroWire，独立数据库编辑器与更新器也不参与 Windows 构建。只连接所选类型的一台编程器；设备唯一性检查仅覆盖后端能够枚举到的设备。
+Windows x64 版本支持 CH341A/B、CH347T 和 CH347F 的 SPI 操作，保留 libusb／libusbK 路径及可选的 WCH 官方后端源码。Windows 下暂不支持 FT232H、I2C 和 MicroWire，独立数据库编辑器与更新器也不参与 Windows 构建。只连接所选类型的一台编程器；设备唯一性检查仅覆盖后端能够枚举到的设备。
 
 SPI NAND 的转储布局和片内 ECC 独立选择，相关控件只在 SPI NAND 模式显示：
 
@@ -198,6 +198,15 @@ IMSProg
 
 > [!NOTE]
 > 上游当前版本的 CH347 编程器不支持 MicroWire（93Cxx）协议。CH347T v1.1 的速度低于 CH347T v1.0。
+
+### CH347F 支持
+
+在“编程器”菜单中选择 **CH347F**。CH347F 的 USB ID 为 `1A86:55DE`，SPI/I2C 位于 USB 接口 4（CH347T 为 `1A86:55DB`、接口 2），两者使用相同的 SPI/I2C 协议和批量端点 `0x06/0x86`。
+
+- 选择 CH347F 时只打开 `55DE` 设备，选择 CH347T 时只打开 `55DB` 设备，两者不会互相回退。
+- 默认 SPI 速度：SPI NOR 30 MHz，SPI NAND 30 MHz，25xx/95xx/45xx 5 MHz（可通过速度系数调整）。
+- Linux 需要更新 udev 规则（`other/71-CH341.rules` 已加入 `55de`）。Windows 下 libusb 后端按端点自动选择接口；WCH 官方 DLL 后端要求 `ChipMode=4`（CH347F）。
+- 与 CH347T 一样，CH347F 暂不支持 MicroWire。
 
 ![93xxx 转接板](img/93xxx_adapter.png)
 
