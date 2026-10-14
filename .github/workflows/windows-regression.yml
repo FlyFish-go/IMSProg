@@ -206,7 +206,10 @@ jobs:
             }
           }
 
-          $objdump = 'C:\msys64\ucrt64\bin\objdump.exe'
+          $objdump = Join-Path $env:RUNNER_TEMP 'msys64\ucrt64\bin\objdump.exe'
+          if (-not (Test-Path $objdump -PathType Leaf)) {
+            throw "objdump.exe not found at $objdump"
+          }
           $peInfo = & $objdump -f dist-windows/libusbK.dll
           if ($LASTEXITCODE -ne 0 -or $peInfo -notmatch 'architecture: i386:x86-64') {
             throw 'libusbK.dll is not an x64 PE binary'
