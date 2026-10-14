@@ -26,10 +26,12 @@ backups before considering writes or erases.
 Validation boundary
 -------------------
 
-CI builds this package as Windows x64 and performs hardware-free protocol,
-backend, source-conformance, sanitizer, and startup smoke checks. Those checks
-do not establish physical programmer compatibility, driver compatibility on a
-particular PC, electrical safety, chip correctness, or throughput.
+CI builds this package as Windows x64, verifies the recursive MinGW DLL import
+closure, and starts the application from two working directories with only the
+Windows system directories on PATH. It also performs hardware-free protocol,
+backend, source-conformance, and sanitizer checks. Those checks do not establish
+physical programmer compatibility, driver compatibility on a particular PC,
+electrical safety, chip correctness, or throughput.
 
 See WINDOWS_CH347.md for build, backend, connection, and safety details.
 Third-party notices and the modified libusb corresponding source are included

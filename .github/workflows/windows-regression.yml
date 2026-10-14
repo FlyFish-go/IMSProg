@@ -86,11 +86,6 @@ jobs:
           "$windeployqt" --release --no-translations \
             "$(cygpath -w "$PWD/dist-windows/IMSProg.exe")"
 
-          for runtime in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
-            test -f "$MINGW_PREFIX/bin/$runtime"
-            cp "$MINGW_PREFIX/bin/$runtime" dist-windows/
-          done
-
           mkdir -p libusb-source-build
           tar -xf third_party/libusb/libusb-1.0.30-imsprog-corresponding-source.tar.gz \
             -C libusb-source-build --exclude='*/README.md'
@@ -101,8 +96,33 @@ jobs:
           cp libusb-source-build/libusb-1.0.30-imsprog/build/libusb-1.0.dll \
             dist-windows/
 
+          runtime_dlls="$RUNNER_TEMP/imsprog-runtime-dlls.txt"
+          : > "$runtime_dlls"
+          while true; do
+            copied=0
+            while IFS= read -r dependency; do
+              [ -n "$dependency" ] || continue
+              packaged_path=$(find dist-windows -type f -iname "$dependency" -print -quit)
+              if [ -n "$packaged_path" ]; then
+                continue
+              fi
+              if [ -f "$MINGW_PREFIX/bin/$dependency" ]; then
+                cp "$MINGW_PREFIX/bin/$dependency" dist-windows/
+                printf '%s\n' "$dependency" >> "$runtime_dlls"
+                copied=1
+              fi
+            done < <(
+              find dist-windows -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0 |
+                xargs -0 -r objdump -p 2>/dev/null |
+                sed -n 's/^[[:space:]]*DLL Name: //p' |
+                sort -fu
+            )
+            [ "$copied" -eq 1 ] || break
+          done
+          sort -fu -o "$runtime_dlls" "$runtime_dlls"
+
           mkdir -p dist-windows/LICENSES/libusb dist-windows/LICENSES/libusbK \
-            dist-windows/LICENSES/Qt dist-windows/LICENSES/MinGW \
+            dist-windows/LICENSES/Qt dist-windows/LICENSES/MSYS2 \
             dist-windows/SOURCE
           cp LICENSE dist-windows/LICENSES/IMSProg-GPL.txt
           cp third_party/libusb/licenses/libusb-LGPL-2.1.txt \
@@ -112,13 +132,28 @@ jobs:
             dist-windows/LICENSES/libusbK/
           test -d "$MINGW_PREFIX/share/licenses/qt6-base"
           cp -r "$MINGW_PREFIX/share/licenses/qt6-base/." dist-windows/LICENSES/Qt/
-          for license_dir in gcc-libs mingw-w64-crt; do
-            if [ -d "$MINGW_PREFIX/share/licenses/$license_dir" ]; then
-              mkdir -p "dist-windows/LICENSES/MinGW/$license_dir"
-              cp -r "$MINGW_PREFIX/share/licenses/$license_dir/." \
-                "dist-windows/LICENSES/MinGW/$license_dir/"
+          runtime_packages=dist-windows/LICENSES/MSYS2/RUNTIME-PACKAGES.txt
+          : > "$runtime_packages"
+          while IFS= read -r runtime; do
+            owner=$(pacman -Qqo "$MINGW_PREFIX/bin/$runtime")
+            package_name=${owner#mingw-w64-ucrt-x86_64-}
+            printf '%s -> %s\n' "$runtime" "$owner" >> "$runtime_packages"
+            destination="dist-windows/LICENSES/MSYS2/$package_name"
+            if [ -d "$destination" ]; then
+              continue
             fi
-          done
+            mkdir -p "$destination"
+            if [ -d "$MINGW_PREFIX/share/licenses/$package_name" ]; then
+              cp -r "$MINGW_PREFIX/share/licenses/$package_name/." "$destination/"
+            elif [ "$package_name" = icu ]; then
+              cp "$MINGW_PREFIX"/share/icu/*/LICENSE "$destination/"
+            else
+              echo "No license directory found for $owner" >&2
+              exit 1
+            fi
+          done < "$runtime_dlls"
+          test -s "$runtime_dlls"
+          test -s "$runtime_packages"
           cp third_party/libusb/libusb-1.0.30-imsprog-corresponding-source.tar.gz \
             third_party/libusb/libusb-portable-libusbk.patch \
             third_party/libusb/README.txt third_party/libusb/SHA256SUMS.txt \
@@ -184,6 +219,8 @@ jobs:
           libusbK release asset SHA256: $libusbKHash
           WCH vendor DLL: not included
           Driver installer: not included
+          MinGW runtime dependencies: recursively bundled and import-closure checked
+          Startup smoke test: isolated from MSYS2 and Qt environment paths
           Hardware validation: not performed
           "@ | Set-Content -Encoding utf8NoBOM dist-windows/BUILD-INFO.txt
 
@@ -197,6 +234,7 @@ jobs:
             'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll',
             'platforms/qwindows.dll', 'README.txt', 'WINDOWS_CH347.md',
             'LICENSES/IMSProg-GPL.txt',
+            'LICENSES/MSYS2/RUNTIME-PACKAGES.txt',
             'SOURCE/libusb-1.0.30-imsprog-corresponding-source.tar.gz'
           )
           foreach ($relative in $required) {
@@ -210,20 +248,82 @@ jobs:
           if (-not (Test-Path $objdump -PathType Leaf)) {
             throw "objdump.exe not found at $objdump"
           }
-          $peInfo = & $objdump -f dist-windows/libusbK.dll
-          $peText = $peInfo -join "`n"
-          if ($LASTEXITCODE -ne 0 -or $peText -notmatch 'architecture: i386:x86-64') {
-            throw 'libusbK.dll is not an x64 PE binary'
+
+          $portableRoot = (Resolve-Path dist-windows).Path
+          $portableBinaries = @(Get-ChildItem $portableRoot -Recurse -File |
+            Where-Object { $_.Extension -in '.exe', '.dll' })
+          $portableNames = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase)
+          foreach ($binary in $portableBinaries) {
+            [void]$portableNames.Add($binary.Name)
+            $peInfo = & $objdump -f $binary.FullName
+            $peText = $peInfo -join "`n"
+            if ($LASTEXITCODE -ne 0 -or $peText -notmatch 'architecture: i386:x86-64') {
+              throw "$($binary.FullName) is not an x64 PE binary"
+            }
           }
 
-          $process = Start-Process -FilePath (Resolve-Path dist-windows/IMSProg.exe) `
-            -WorkingDirectory (Resolve-Path dist-windows) -PassThru
-          Start-Sleep -Seconds 5
-          if ($process.HasExited) {
-            throw "IMSProg.exe exited during smoke start with code $($process.ExitCode)"
+          $mingwBin = Join-Path $env:RUNNER_TEMP 'msys64\ucrt64\bin'
+          $missingDependencies = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase)
+          foreach ($binary in $portableBinaries) {
+            $imports = & $objdump -p $binary.FullName
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not inspect imports for $($binary.FullName)"
+            }
+            foreach ($line in $imports) {
+              if ($line -match 'DLL Name:\s*(\S+)') {
+                $dependency = $Matches[1]
+                if ((Test-Path (Join-Path $mingwBin $dependency) -PathType Leaf) -and
+                    -not $portableNames.Contains($dependency)) {
+                  [void]$missingDependencies.Add($dependency)
+                }
+              }
+            }
           }
-          Stop-Process -Id $process.Id -Force
-          Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
+          if ($missingDependencies.Count -ne 0) {
+            $missing = @($missingDependencies) | Sort-Object
+            throw "Portable bundle is missing MinGW dependencies: $($missing -join ', ')"
+          }
+
+          $application = (Resolve-Path dist-windows/IMSProg.exe).Path
+          $smokeDirectories = @($portableRoot, $env:RUNNER_TEMP)
+          $isolatedVariables = @(
+            'MINGW_PREFIX', 'MSYSTEM', 'QT_PLUGIN_PATH',
+            'QT_QPA_PLATFORM_PLUGIN_PATH', 'QT_QPA_PLATFORM',
+            'QML2_IMPORT_PATH', 'QML_IMPORT_PATH'
+          )
+          $savedPath = $env:PATH
+          $savedVariables = @{}
+          foreach ($name in $isolatedVariables) {
+            $savedVariables[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+          }
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem"
+            foreach ($name in $isolatedVariables) {
+              [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+            }
+            foreach ($workingDirectory in $smokeDirectories) {
+              $process = Start-Process -FilePath $application `
+                -WorkingDirectory $workingDirectory -PassThru
+              try {
+                Start-Sleep -Seconds 5
+                if ($process.HasExited) {
+                  throw "IMSProg.exe exited during isolated smoke start from $workingDirectory with code $($process.ExitCode)"
+                }
+              } finally {
+                if (-not $process.HasExited) {
+                  Stop-Process -Id $process.Id -Force
+                  Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
+                }
+              }
+            }
+          } finally {
+            $env:PATH = $savedPath
+            foreach ($name in $isolatedVariables) {
+              [Environment]::SetEnvironmentVariable($name, $savedVariables[$name], 'Process')
+            }
+          }
 
       - name: Archive portable bundle
         shell: pwsh
