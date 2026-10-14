@@ -93,7 +93,7 @@ jobs:
 
           mkdir -p libusb-source-build
           tar -xf third_party/libusb/libusb-1.0.30-imsprog-corresponding-source.tar.gz \
-            -C libusb-source-build
+            -C libusb-source-build --exclude='*/README.md'
           (
             cd libusb-source-build/libusb-1.0.30-imsprog
             CC=gcc WINDRES=windres STRIP=strip bash build-imsprog.sh
