@@ -25,8 +25,10 @@ jobs:
           sh tests/run_ch341_async_tests.sh
           sh tests/run_ch347_transport_tests.sh
           sh tests/run_ch347_model_tests.sh
+          sh tests/run_interface_speed_tests.sh
           sh tests/run_usb_descriptor_tests.sh
           sh tests/run_windows_backend_tests.sh
+          python3 tests/ch347f_dialog_conformance.py
           python3 tests/ui_windows_conformance.py
       - name: Address and undefined-behavior sanitizers
         env:

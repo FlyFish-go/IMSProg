@@ -82,8 +82,10 @@ Run these host-compiled tests without a USB device or host libusb installation:
 sh tests/run_ch341_spi_tests.sh
 sh tests/run_ch341_async_tests.sh
 sh tests/run_ch347_transport_tests.sh
+sh tests/run_interface_speed_tests.sh
 sh tests/run_usb_descriptor_tests.sh
 sh tests/run_windows_backend_tests.sh
+python3 tests/ch347f_dialog_conformance.py
 python3 tests/ui_windows_conformance.py
 ```
 
@@ -94,6 +96,11 @@ partially initialized function table. Transfer errors never switch backends or
 retry commands. CH341 asynchronous cancellation drains callbacks before buffers
 are released; a broken event loop that never completes callbacks can remain
 blocked rather than free live buffers.
+
+The CH347F speed test executes the production preset and auxiliary-dialog cap
+logic without opening a programmer. The CH347F dialog conformance check verifies
+that NAND/NOR/EEPROM auxiliary windows use that cap and that the wiring dialog
+shows an unknown-pinout warning instead of a different board's diagram.
 
 `SANITIZE=1` enables ASan/UBSan in the NAND, CH341 SPI/async and Windows backend
 runners. The CH347 transport test uses the vendored libusb ABI header and fake

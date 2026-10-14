@@ -14,6 +14,7 @@
  */
 #include "dialoginfo.h"
 #include "ui_dialoginfo.h"
+#include "ch347.h"
 
 DialogInfo::DialogInfo(QWidget *parent) :
     QDialog(parent),
@@ -132,6 +133,14 @@ void DialogInfo::setProgrammer(const uint8_t progType)
 
 void DialogInfo::setChip(const uint chipType)
 {
+   if (PROG_IS_CH347F(currentProg))
+   {
+      ui->label->setPixmap(*pixnone);
+      ui->label_slot->setText("-");
+      ui->label_adapter->setText(tr("Unknown CH347F pinout.\nCheck the board documentation."));
+      return;
+   }
+
    switch (chipType)
    {
      case 1:

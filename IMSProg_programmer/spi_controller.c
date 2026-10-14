@@ -169,6 +169,18 @@ uint16_t getInterfaceSpeed(u8 deviceType, u8 chipType, u16 delay)
     return interfaceSpeed;
 }
 
+uint16_t getAuxiliaryInterfaceSpeed(u8 deviceType, u8 chipType, u16 maximumSpeed)
+{
+    uint16_t selectedSpeed;
+
+    /* Keep the established auxiliary-dialog limits for every existing
+     * programmer. CH347F presets may only lower those limits. */
+    if (!PROG_IS_CH347F(deviceType)) return maximumSpeed;
+
+    selectedSpeed = getInterfaceSpeed(deviceType, chipType, 1000);
+    return selectedSpeed < maximumSpeed ? selectedSpeed : maximumSpeed;
+}
+
 SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Enable_Manual_Mode( void )
 {
 	return 0;
