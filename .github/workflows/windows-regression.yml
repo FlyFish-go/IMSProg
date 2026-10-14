@@ -226,30 +226,42 @@ jobs:
           Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
 
       - name: Archive portable bundle
+        shell: pwsh
         run: |
-          set -euxo pipefail
-          (
-            cd dist-windows
-            find . -type f ! -name SHA256SUMS.txt -print0 |
-              sort -z | xargs -0 sha256sum > SHA256SUMS.txt
-          )
-          mkdir -p artifacts
-          archive="IMSProg-Windows-x64-${GITHUB_SHA:0:7}.zip"
-          (
-            cd dist-windows
-            7z a -tzip -mx=9 "../artifacts/$archive" ./*
-          )
-          sha256sum "artifacts/$archive" > "artifacts/$archive.sha256"
-          bytes=$(stat -c%s "artifacts/$archive")
-          checksum=$(sha256sum "artifacts/$archive" | cut -d' ' -f1)
-          {
-            echo "### Windows x64 portable package"
-            echo "- File: $archive"
-            echo "- Size: $bytes bytes"
-            echo "- SHA256: $checksum"
-            echo "- Source: $GITHUB_SHA"
-            echo "- Hardware validation: not performed"
-          } >> "$GITHUB_STEP_SUMMARY"
+          $ErrorActionPreference = 'Stop'
+          $source = Resolve-Path dist-windows
+          $hashLines = Get-ChildItem $source -Recurse -File |
+            Where-Object Name -ne 'SHA256SUMS.txt' |
+            Sort-Object FullName |
+            ForEach-Object {
+              $relative = $_.FullName.Substring($source.Path.Length + 1).Replace('\', '/')
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+              "$hash  ./$relative"
+            }
+          $hashLines | Set-Content -Encoding ascii dist-windows/SHA256SUMS.txt
+
+          New-Item -ItemType Directory artifacts -Force | Out-Null
+          $archive = "IMSProg-Windows-x64-$($env:GITHUB_SHA.Substring(0, 7)).zip"
+          Push-Location dist-windows
+          try {
+            & 7z a -tzip -mx=9 "../artifacts/$archive" './*' | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw '7z archive creation failed' }
+          } finally {
+            Pop-Location
+          }
+
+          $archivePath = Join-Path artifacts $archive
+          $checksum = (Get-FileHash $archivePath -Algorithm SHA256).Hash.ToLower()
+          $bytes = (Get-Item $archivePath).Length
+          "$checksum  $archive" | Set-Content -Encoding ascii "$archivePath.sha256"
+          @"
+          ### Windows x64 portable package
+          - File: $archive
+          - Size: $bytes bytes
+          - SHA256: $checksum
+          - Source: $env:GITHUB_SHA
+          - Hardware validation: not performed
+          "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
       - name: Upload Windows x64 portable artifact
         uses: actions/upload-artifact@v4
