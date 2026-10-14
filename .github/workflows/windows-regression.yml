@@ -72,4 +72,188 @@ jobs:
         run: |
           CC=gcc sh tests/run_ch341_async_tests.sh
           CC=gcc sh tests/run_usb_descriptor_tests.sh
-      # Build validation only. No DLL, EXE or binary bundle is published.
+      - name: Prepare portable Windows x64 bundle
+        run: |
+          set -euxo pipefail
+          rm -rf dist-windows libusb-source-build
+          cmake --install build-windows --prefix "$PWD/dist-windows"
+
+          windeployqt="$MINGW_PREFIX/bin/windeployqt6.exe"
+          if [ ! -x "$windeployqt" ]; then
+            windeployqt="$MINGW_PREFIX/bin/windeployqt.exe"
+          fi
+          test -x "$windeployqt"
+          "$windeployqt" --release --no-translations \
+            "$(cygpath -w "$PWD/dist-windows/IMSProg.exe")"
+
+          for runtime in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
+            test -f "$MINGW_PREFIX/bin/$runtime"
+            cp "$MINGW_PREFIX/bin/$runtime" dist-windows/
+          done
+
+          mkdir -p libusb-source-build
+          tar -xf third_party/libusb/libusb-1.0.30-imsprog-corresponding-source.tar.gz \
+            -C libusb-source-build
+          (
+            cd libusb-source-build/libusb-1.0.30-imsprog
+            CC=gcc WINDRES=windres STRIP=strip bash build-imsprog.sh
+          )
+          cp libusb-source-build/libusb-1.0.30-imsprog/build/libusb-1.0.dll \
+            dist-windows/
+
+          mkdir -p dist-windows/LICENSES/libusb dist-windows/LICENSES/libusbK \
+            dist-windows/LICENSES/Qt dist-windows/LICENSES/MinGW \
+            dist-windows/SOURCE
+          cp LICENSE dist-windows/LICENSES/IMSProg-GPL.txt
+          cp third_party/libusb/licenses/libusb-LGPL-2.1.txt \
+            dist-windows/LICENSES/libusb/
+          cp third_party/libusb/licenses/libusbK-AUTHORS.txt \
+            third_party/libusb/licenses/libusbK-BSD-3-Clause.txt \
+            dist-windows/LICENSES/libusbK/
+          test -d "$MINGW_PREFIX/share/licenses/qt6-base"
+          cp -r "$MINGW_PREFIX/share/licenses/qt6-base/." dist-windows/LICENSES/Qt/
+          for license_dir in gcc-libs mingw-w64-crt; do
+            if [ -d "$MINGW_PREFIX/share/licenses/$license_dir" ]; then
+              mkdir -p "dist-windows/LICENSES/MinGW/$license_dir"
+              cp -r "$MINGW_PREFIX/share/licenses/$license_dir/." \
+                "dist-windows/LICENSES/MinGW/$license_dir/"
+            fi
+          done
+          cp third_party/libusb/libusb-1.0.30-imsprog-corresponding-source.tar.gz \
+            third_party/libusb/libusb-portable-libusbk.patch \
+            third_party/libusb/README.txt third_party/libusb/SHA256SUMS.txt \
+            dist-windows/SOURCE/
+          cp docs/WINDOWS_PORTABLE.txt dist-windows/README.txt
+          cp docs/WINDOWS_CH347.md dist-windows/
+
+          test -s dist-windows/IMSProg.exe
+          test -s dist-windows/IMSProg.Dat
+          test -s dist-windows/libusb-1.0.dll
+          test -s dist-windows/platforms/qwindows.dll
+          objdump -f dist-windows/IMSProg.exe | grep -q 'architecture: i386:x86-64'
+          objdump -f dist-windows/libusb-1.0.dll | grep -q 'architecture: i386:x86-64'
+
+      - name: Add official x64 libusbK runtime
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            'User-Agent' = 'IMSProg-Windows-CI'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $release = Invoke-RestMethod -Headers $headers `
+            -Uri 'https://api.github.com/repos/mcuee/libusbk/releases/tags/V3.1.0.0'
+          $assets = @($release.assets | Where-Object {
+            $_.name -match '(?i)^libusbK-.*-bin\.(7z|zip)$'
+          })
+          if ($assets.Count -ne 1) {
+            throw "Expected one libusbK binary archive, found $($assets.Count)"
+          }
+
+          Remove-Item -Recurse -Force libusbk-release -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory libusbk-release | Out-Null
+          $archive = Join-Path libusbk-release $assets[0].name
+          Invoke-WebRequest -Headers $headers -Uri $assets[0].browser_download_url `
+            -OutFile $archive
+          if ($archive.EndsWith('.zip')) {
+            Expand-Archive -Path $archive -DestinationPath libusbk-release/unpacked
+          } else {
+            & 7z x $archive '-olibusbk-release/unpacked' | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw '7z extraction failed' }
+          }
+
+          $candidates = @(Get-ChildItem libusbk-release/unpacked -Recurse `
+            -Filter libusbK.dll | Where-Object {
+              $_.FullName -match '(?i)[\\/](amd64|x64)[\\/]' -and
+              $_.FullName -notmatch '(?i)[\\/]debug[\\/]'
+            })
+          if ($candidates.Count -ne 1) {
+            throw "Expected one release x64 libusbK.dll, found $($candidates.Count)"
+          }
+          Copy-Item $candidates[0].FullName dist-windows/libusbK.dll
+
+          $libusbKHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+          @"
+          IMSProg Windows x64 portable build
+          Source commit: $env:GITHUB_SHA
+          Workflow run: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+          libusbK release asset: $($assets[0].name)
+          libusbK release asset SHA256: $libusbKHash
+          WCH vendor DLL: not included
+          Driver installer: not included
+          Hardware validation: not performed
+          "@ | Set-Content -Encoding utf8NoBOM dist-windows/BUILD-INFO.txt
+
+      - name: Verify portable bundle and smoke-start
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @(
+            'IMSProg.exe', 'IMSProg.Dat', 'libusb-1.0.dll', 'libusbK.dll',
+            'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
+            'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll',
+            'platforms/qwindows.dll', 'README.txt', 'WINDOWS_CH347.md',
+            'LICENSES/IMSProg-GPL.txt',
+            'SOURCE/libusb-1.0.30-imsprog-corresponding-source.tar.gz'
+          )
+          foreach ($relative in $required) {
+            $path = Join-Path dist-windows $relative
+            if (-not (Test-Path $path -PathType Leaf)) {
+              throw "Missing portable runtime file: $relative"
+            }
+          }
+
+          $objdump = 'C:\msys64\ucrt64\bin\objdump.exe'
+          $peInfo = & $objdump -f dist-windows/libusbK.dll
+          if ($LASTEXITCODE -ne 0 -or $peInfo -notmatch 'architecture: i386:x86-64') {
+            throw 'libusbK.dll is not an x64 PE binary'
+          }
+
+          $process = Start-Process -FilePath (Resolve-Path dist-windows/IMSProg.exe) `
+            -WorkingDirectory (Resolve-Path dist-windows) -PassThru
+          Start-Sleep -Seconds 5
+          if ($process.HasExited) {
+            throw "IMSProg.exe exited during smoke start with code $($process.ExitCode)"
+          }
+          Stop-Process -Id $process.Id -Force
+          Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
+
+      - name: Archive portable bundle
+        run: |
+          set -euxo pipefail
+          (
+            cd dist-windows
+            find . -type f ! -name SHA256SUMS.txt -print0 |
+              sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          )
+          mkdir -p artifacts
+          archive="IMSProg-Windows-x64-${GITHUB_SHA:0:7}.zip"
+          (
+            cd dist-windows
+            7z a -tzip -mx=9 "../artifacts/$archive" ./*
+          )
+          sha256sum "artifacts/$archive" > "artifacts/$archive.sha256"
+          bytes=$(stat -c%s "artifacts/$archive")
+          checksum=$(sha256sum "artifacts/$archive" | cut -d' ' -f1)
+          {
+            echo "### Windows x64 portable package"
+            echo "- File: $archive"
+            echo "- Size: $bytes bytes"
+            echo "- SHA256: $checksum"
+            echo "- Source: $GITHUB_SHA"
+            echo "- Hardware validation: not performed"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Windows x64 portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IMSProg-Windows-x64-${{ github.sha }}
+          path: |
+            artifacts/*.zip
+            artifacts/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

@@ -1,0 +1,36 @@
+IMSProg Windows x64 portable package
+====================================
+
+1. Extract the whole ZIP to a writable folder. Keep every DLL and subfolder
+   beside IMSProg.exe; do not copy DLLs into System32.
+2. Run IMSProg.exe. The executable and DLLs are unsigned, so Windows may show
+   a SmartScreen warning.
+3. Select CH341A/B, CH347T, or CH347F explicitly in the Programmer menu.
+4. If connection fails, use Programmer > Programmer connection diagnostics.
+   The diagnostics inspect USB metadata without sending flash commands.
+
+USB and driver notes
+--------------------
+
+The package includes the userspace libusb-1.0.dll / libusbK.dll runtime pair.
+It does not contain, install, replace, detach, or reset a Windows driver. Keep
+an existing working driver unchanged. No WCH vendor DLL is included because its
+public redistribution permission and GPL compatibility have not been
+established.
+
+For a cautious first check, disconnect the flash chip, start IMSProg, and run
+connection diagnostics. Then verify voltage, signal-level conversion, wiring,
+and board documentation. Start with repeated read-only dumps and compare
+backups before considering writes or erases.
+
+Validation boundary
+-------------------
+
+CI builds this package as Windows x64 and performs hardware-free protocol,
+backend, source-conformance, sanitizer, and startup smoke checks. Those checks
+do not establish physical programmer compatibility, driver compatibility on a
+particular PC, electrical safety, chip correctness, or throughput.
+
+See WINDOWS_CH347.md for build, backend, connection, and safety details.
+Third-party notices and the modified libusb corresponding source are included
+under LICENSES and SOURCE.
