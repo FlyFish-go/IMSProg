@@ -178,12 +178,14 @@ MainWindow::MainWindow(QWidget *parent) :
               SetItemStatus("comboBox_type", 2, true);
           }
        if (current_programmer == 4) ui->actionFT232H_v1_2->setChecked(true);
-       if (current_programmer == 5)
+       if (current_programmer > PROG_CH347F_SAFE) current_programmer = 0;
+       if (PROG_IS_CH347F(current_programmer))
           {
-              ui->actionCH347F->setChecked(true);
+              ui->actionCH347F->setChecked(current_programmer == PROG_CH347F_STD);
+              ui->actionCH347F_fast->setChecked(current_programmer == PROG_CH347F_FAST);
+              ui->actionCH347F_safe->setChecked(current_programmer == PROG_CH347F_SAFE);
               SetItemStatus("comboBox_type", 2, true);
           }
-       if (current_programmer > 5) current_programmer = 0;
      settings.endGroup();
      settings.beginGroup("FormPosition");
      if (settings.contains("geometry"))
@@ -197,7 +199,7 @@ MainWindow::MainWindow(QWidget *parent) :
  if (current_programmer < 2) ui->lStatus->setText("CH341A/B");
  if ((current_programmer == 2) || (current_programmer == 3)) ui->lStatus->setText("CH347T");
  if (current_programmer == 4) ui->lStatus->setText("FT232H");
- if (current_programmer == 5) ui->lStatus->setText("CH347F");
+ if (PROG_IS_CH347F(current_programmer)) ui->lStatus->setText("CH347F");
  statusCH341 = ProgDeviceInit(current_programmer, currentChipType,
      currentChipType == 1 ? currentI2CBusSpeed : getInterfaceSpeed(current_programmer, currentChipType, currentDelay));
  ch341StatusFlashing();
@@ -2144,6 +2146,8 @@ void MainWindow::doNotDisturb()
    ui->actionCH347T->setDisabled(true);
    ui->actionCH347T_v1_1->setDisabled(true);
    ui->actionCH347F->setDisabled(true);
+   ui->actionCH347F_fast->setDisabled(true);
+   ui->actionCH347F_safe->setDisabled(true);
    ui->actionShow_programmer_version->setDisabled(true);
    ui->actionConnection_diagnostics->setDisabled(true);
 
@@ -2205,6 +2209,8 @@ void MainWindow::doNotDisturbCancel()
    ui->actionCH347T->setDisabled(false);
    ui->actionCH347T_v1_1->setDisabled(false);
    ui->actionCH347F->setDisabled(false);
+   ui->actionCH347F_fast->setDisabled(false);
+   ui->actionCH347F_safe->setDisabled(false);
    ui->actionShow_programmer_version->setDisabled(false);
    ui->actionConnection_diagnostics->setDisabled(false);
    if ((currentChipType == 0) || (currentChipType == 6) || (currentChipType > 2)) ui->actionChip_info->setDisabled(false);
@@ -2888,14 +2894,20 @@ void MainWindow::on_actionCH347T_v1_1_triggered()
     SetItemStatus("comboBox_vcc", 3, false);
 }
 
-void MainWindow::on_actionCH347F_triggered()
+void MainWindow::selectCH347F(unsigned char programmer)
 {
     // CH347F (USB 1A86:55DE, SPI/I2C on interface 4). Same SPI/I2C protocol as CH347T.
-    current_programmer = 5;
+    // The presets differ only in default SPI clocks (see getInterfaceSpeed()).
+    current_programmer = programmer;
     ui->lStatus->setText("CH347F");
     SetItemStatus("comboBox_type", 2, true);
     SetItemStatus("comboBox_vcc", 3, false);
+    defaultSpeed = getInterfaceSpeed(current_programmer, currentChipType, currentDelay);
 }
+
+void MainWindow::on_actionCH347F_triggered() { selectCH347F(PROG_CH347F_STD); }
+void MainWindow::on_actionCH347F_fast_triggered() { selectCH347F(PROG_CH347F_FAST); }
+void MainWindow::on_actionCH347F_safe_triggered() { selectCH347F(PROG_CH347F_SAFE); }
 
 void MainWindow::on_actionFT232H_v1_2_triggered()
 {
@@ -3428,7 +3440,7 @@ void MainWindow::applyPlatformRestrictions()
     ui->actionConnection_diagnostics->setVisible(false);
 #ifdef _WIN32
     ui->actionConnection_diagnostics->setVisible(true);
-    if (current_programmer == 4 || current_programmer > 5) current_programmer = 2;
+    if (current_programmer == 4 || current_programmer > PROG_CH347F_SAFE) current_programmer = 2;
     ui->actionCH341A_B_v1_2->setEnabled(true);
     ui->actionCH341A_v1_7->setEnabled(true);
     ui->actionCH341A_B_v1_2->setText(tr("CH341A/B (SPI)"));
@@ -3441,7 +3453,9 @@ void MainWindow::applyPlatformRestrictions()
     ui->actionShow_programmer_version->setEnabled(false);
     ui->actionCH347T->setChecked(current_programmer == 2);
     ui->actionCH347T_v1_1->setChecked(current_programmer == 3);
-    ui->actionCH347F->setChecked(current_programmer == 5);
+    ui->actionCH347F->setChecked(current_programmer == PROG_CH347F_STD);
+    ui->actionCH347F_fast->setChecked(current_programmer == PROG_CH347F_FAST);
+    ui->actionCH347F_safe->setChecked(current_programmer == PROG_CH347F_SAFE);
     SetItemStatus("comboBox_type", 1, true); // I2C is not included in this Windows port.
     SetItemStatus("comboBox_type", 2, true); // MicroWire is not included.
     setWindowTitle(tr("IMSProg ECC/OOB v4 - CH341A/B + CH347T/F Windows SPI"));
@@ -3466,7 +3480,7 @@ void MainWindow::on_actionConnection_diagnostics_triggered()
     const bool timerWasActive = timer->isActive();
     timer->stop();
     // Backend enumeration only: no SPI setup, NAND command or driver change.
-    if (current_programmer >= 2) ch347_select_model(current_programmer == 5 ? CH347_MODEL_F : CH347_MODEL_T);
+    if (current_programmer >= 2) ch347_select_model(PROG_IS_CH347F(current_programmer) ? CH347_MODEL_F : CH347_MODEL_T);
     if (current_programmer < 2) ch341_windows_diagnose();
     else ch347_windows_diagnose();
     const QString report = QString::fromUtf8(ch347_windows_last_report());

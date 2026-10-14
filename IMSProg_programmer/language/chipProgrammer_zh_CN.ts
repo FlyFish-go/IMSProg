@@ -2369,6 +2369,9 @@ Need: FF</source>
     <message><source>CH341A/B (SPI)</source><translation>CH341A/B（SPI）</translation></message>
     <message><source>CH341A/B v1.7 board (SPI)</source><translation>CH341A/B v1.7 板（SPI）</translation></message>
     <message><source>CH341A/B share the SPI/parallel USB identity. This selection does not set the physical voltage.</source><translation>CH341A/B 共用 SPI/并口 USB 标识；此选择不会改变实际供电和信号电压。</translation></message>
+    <message><source>CH347F Standard (30 MHz)</source><translation>CH347F 标准（30 MHz）</translation></message>
+    <message><source>CH347F High speed (NAND 60 MHz)</source><translation>CH347F 高速（NAND 60 MHz）</translation></message>
+    <message><source>CH347F Low speed (7.5 MHz)</source><translation>CH347F 低速（7.5 MHz）</translation></message>
 </context>
 <context>
     <name>SearchDialog</name>

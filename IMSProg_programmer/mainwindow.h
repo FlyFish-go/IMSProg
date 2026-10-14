@@ -131,6 +131,9 @@ private slots:
     void SetItemStatus(QString comboboxName, int itemNumber, bool setDisable);
     void on_actionCH347T_v1_1_triggered();
     void on_actionCH347F_triggered();
+    void on_actionCH347F_fast_triggered();
+    void on_actionCH347F_safe_triggered();
+    void selectCH347F(unsigned char programmer);
     void on_actionShow_programmer_version_triggered();
     void on_actionConnection_diagnostics_triggered();
     void on_actionCheck_erase_triggered();

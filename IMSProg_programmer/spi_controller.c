@@ -60,7 +60,9 @@ int ProgDeviceInit( u8 deviceType, u8 chipType, u16 speed )
             ch347_select_model(CH347_MODEL_T);
             ret = ch347_spi_init(chipType, speed);
             break;
-        case 5: // CH347F
+        case 5: // CH347F standard
+        case 6: // CH347F high speed
+        case 7: // CH347F low speed
             ch347_select_model(CH347_MODEL_F);
             ret = ch347_spi_init(chipType, speed);
             break;
@@ -94,7 +96,9 @@ int ProgDeviceClose( u8 deviceType )
         ch347_spi_shutdown();
         ret = 0;
         break;
-    case 5: // CH347F
+    case 5: // CH347F standard
+    case 6: // CH347F high speed
+    case 7: // CH347F low speed
     case 3: // CH347T v1.1
         ch347_spi_shutdown();
         ret = 0;
@@ -123,7 +127,9 @@ int getDeviceDescriptor(u8 *data, u8 deviceType)
     case 2: // CH347T v1.0
         ch347GetDescriptor(data);
         break;
-    case 5: // CH347F
+    case 5: // CH347F standard
+    case 6: // CH347F high speed
+    case 7: // CH347F low speed
     case 3: // CH347T v1.1
         ch347GetDescriptor(data);
         break;
@@ -140,15 +146,22 @@ int getDeviceDescriptor(u8 *data, u8 deviceType)
 uint16_t getInterfaceSpeed(u8 deviceType, u8 chipType, u16 delay)
 {
     u16 interfaceSpeed = 400;
-    static u16 defaultSpeed[6][7] = {
+    /* CH347 SPI clocks are 60 MHz / 2^n (60, 30, 15, 7.5, 3.75, 1.875 MHz ...);
+     * a requested value is rounded down to the nearest available clock.
+     * SPI NOR uses the plain READ (0x03) command, limited to ~33-50 MHz by most
+     * flashes, so NOR stays at or below 30 MHz even in the high-speed preset. */
+    static u16 defaultSpeed[8][7] = {
         //SPINOR 24xx   93xx   25xx   95xx   45xx   SPINAND
         { 1600,   400,  1600,  1600,  1600,  1600,  1600}, // CH341A v1.2
         { 1600,   400,  1600,  1600,  1600,  1600,  1600}, // CH341A v1.7
         {30000,   400,  1600,  5000,  5000,  5000, 60000}, // CH347T v1.0
         {15000,   400,  1600,  5000,  5000,  5000, 15000}, // CH347T v1.1
         {30000,   400,  1600,  5000,  5000,  5000, 30000}, // FT232H v1.2
-        {30000,   400,  1600,  5000,  5000,  5000, 30000}  // CH347F
+        {30000,   400,  1600,  5000,  5000,  5000, 30000}, // CH347F standard  (NOR/NAND 30 MHz, EEPROM 3.75 MHz)
+        {30000,   400,  1600,  7500,  7500, 15000, 60000}, // CH347F high speed (NOR 30, NAND 60, 25xx/95xx 7.5, 45xx 15 MHz)
+        { 7500,   400,  1600,  1875,  1875,  1875,  7500}  // CH347F low speed  (NOR/NAND 7.5 MHz, EEPROM 1.875 MHz)
     };
+    if (deviceType > 7 || chipType > 6) return 1600;
     if ((delay > 40) && (delay < 2100)) interfaceSpeed = defaultSpeed[deviceType][chipType] * delay / 1000;
     else interfaceSpeed = defaultSpeed[deviceType][chipType];
     if ((interfaceSpeed) < 20) interfaceSpeed = 20;
@@ -174,7 +187,9 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Write_One_Byte( u8  data, u8 deviceType )
     case 2: // CH347T v1.0
         return (SPI_CONTROLLER_RTN_T)ch347_spi_tx(priv, &data, 1);
         break;
-    case 5: // CH347F
+    case 5: // CH347F standard
+    case 6: // CH347F high speed
+    case 7: // CH347F low speed
     case 3: // CH347T v1.1
         return (SPI_CONTROLLER_RTN_T)ch347_spi_tx(priv, &data, 1);
         break;
@@ -197,7 +212,9 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Chip_Select_High( u8 deviceType )
     case 2: // CH347T v1.0
         return (SPI_CONTROLLER_RTN_T)ch347_set_cs(priv, 0, 1);
         break;
-    case 5: // CH347F
+    case 5: // CH347F standard
+    case 6: // CH347F high speed
+    case 7: // CH347F low speed
     case 3: // CH347T v1.1
         return (SPI_CONTROLLER_RTN_T)ch347_set_cs(priv, 0, 1);
         break;
@@ -220,7 +237,9 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Chip_Select_Low( u8 deviceType )
     case 2: // CH347T v1.0
         return (SPI_CONTROLLER_RTN_T)ch347_set_cs(priv, 0, 0);
         break;
-    case 5: // CH347F
+    case 5: // CH347F standard
+    case 6: // CH347F high speed
+    case 7: // CH347F low speed
     case 3: // CH347T v1.1
         return (SPI_CONTROLLER_RTN_T)ch347_set_cs(priv, 0, 0);
         break;
@@ -243,7 +262,9 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Read_NByte( u8 *ptr_rtn_data, u32 len, SPI_C
     case 2: // CH347T v1.0
         return (SPI_CONTROLLER_RTN_T)ch347_spi_rx(priv, ptr_rtn_data, len);
         break;
-    case 5: // CH347F
+    case 5: // CH347F standard
+    case 6: // CH347F high speed
+    case 7: // CH347F low speed
     case 3: // CH347T v1.1
         return (SPI_CONTROLLER_RTN_T)ch347_spi_rx(priv, ptr_rtn_data, len);
         break;
@@ -266,7 +287,9 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Write_NByte( u8 *ptr_data, u32 len, SPI_CONT
     case 2: // CH347T v1.0
         return (SPI_CONTROLLER_RTN_T)ch347_spi_tx(priv, ptr_data, len);
         break;
-    case 5: // CH347F
+    case 5: // CH347F standard
+    case 6: // CH347F high speed
+    case 7: // CH347F low speed
     case 3: // CH347T v1.1
         return (SPI_CONTROLLER_RTN_T)ch347_spi_tx(priv, ptr_data, len);
         break;

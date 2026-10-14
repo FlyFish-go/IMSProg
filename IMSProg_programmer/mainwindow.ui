@@ -1117,7 +1117,9 @@ QPushButton::pressed{background-color: rgb(115, 210, 22);}</string>
     <addaction name="actionCH341A_v1_7"/>
     <addaction name="actionCH347T"/>
     <addaction name="actionCH347T_v1_1"/>
+    <addaction name="actionCH347F_fast"/>
     <addaction name="actionCH347F"/>
+    <addaction name="actionCH347F_safe"/>
     <addaction name="actionFT232H_v1_2"/>
     <addaction name="separator"/>
     <addaction name="actionShow_programmer_version"/>
@@ -1578,7 +1580,23 @@ QPushButton::pressed{background-color: rgb(115, 210, 22);}</string>
      <bool>true</bool>
     </property>
     <property name="text">
-     <string>CH347F</string>
+     <string>CH347F Standard (30 MHz)</string>
+    </property>
+   </action>
+   <action name="actionCH347F_fast">
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+    <property name="text">
+     <string>CH347F High speed (NAND 60 MHz)</string>
+    </property>
+   </action>
+   <action name="actionCH347F_safe">
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+    <property name="text">
+     <string>CH347F Low speed (7.5 MHz)</string>
     </property>
    </action>
    <action name="actionFT232H_v1_2">

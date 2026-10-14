@@ -201,10 +201,18 @@ IMSProg
 
 ### CH347F 支持
 
-在“编程器”菜单中选择 **CH347F**。CH347F 的 USB ID 为 `1A86:55DE`，SPI/I2C 位于 USB 接口 4（CH347T 为 `1A86:55DB`、接口 2），两者使用相同的 SPI/I2C 协议和批量端点 `0x06/0x86`。
+在“编程器”菜单中选择 **CH347F 高速／标准／低速** 之一。CH347F 的 USB ID 为 `1A86:55DE`，SPI/I2C 位于 USB 接口 4（CH347T 为 `1A86:55DB`、接口 2），两者使用相同的 SPI/I2C 协议和批量端点 `0x06/0x86`。
 
 - 选择 CH347F 时只打开 `55DE` 设备，选择 CH347T 时只打开 `55DB` 设备，两者不会互相回退。
-- 默认 SPI 速度：SPI NOR 30 MHz，SPI NAND 30 MHz，25xx/95xx/45xx 5 MHz（可通过速度系数调整）。
+- 提供三档速度预设（实际时钟为 60 MHz 的 2^n 分频，向下取整）：
+
+  | 预设 | SPI NOR | SPI NAND | 25xx / 95xx | 45xx | 适用场景 |
+  | --- | --- | --- | --- | --- | --- |
+  | CH347F 高速 | 30 MHz | 60 MHz | 7.5 MHz | 15 MHz | 3.3 V 直连、短线、测试座 |
+  | CH347F 标准 | 30 MHz | 30 MHz | 3.75 MHz | 3.75 MHz | 默认推荐 |
+  | CH347F 低速 | 7.5 MHz | 7.5 MHz | 1.875 MHz | 1.875 MHz | 1.8 V 电平转换、长线、在板夹子烧录、读数不稳定 |
+
+  SPI NOR 使用普通 READ（0x03）命令，多数芯片限制在 33–50 MHz，所以高速档 NOR 仍为 30 MHz。芯片数据库中的速度系数会在此基础上继续缩放。
 - Linux 需要更新 udev 规则（`other/71-CH341.rules` 已加入 `55de`）。Windows 下 libusb 后端按端点自动选择接口；WCH 官方 DLL 后端要求 `ChipMode=4`（CH347F）。
 - 与 CH347T 一样，CH347F 暂不支持 MicroWire。
 

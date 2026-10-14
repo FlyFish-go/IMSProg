@@ -48,6 +48,12 @@ extern "C" {
 #define CH347_SPI_PID CH347T_SPI_PID
 #define CH347_SPI_IF CH347T_SPI_IF
 
+/* Application programmer indices of the CH347F speed presets (see spi_controller.c). */
+#define PROG_CH347F_STD  5  /* CH347F standard: 30 MHz NOR/NAND */
+#define PROG_CH347F_FAST 6  /* CH347F high speed: 30 MHz NOR, 60 MHz NAND */
+#define PROG_CH347F_SAFE 7  /* CH347F low speed: 7.5 MHz NOR/NAND, long wires/in-circuit/level shifters */
+#define PROG_IS_CH347F(t) ((t) >= PROG_CH347F_STD && (t) <= PROG_CH347F_SAFE)
+
 /* CH347 chip variants selectable by the application. */
 enum ch347_model {
     CH347_MODEL_T = 0,
