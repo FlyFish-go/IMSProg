@@ -211,7 +211,8 @@ jobs:
             throw "objdump.exe not found at $objdump"
           }
           $peInfo = & $objdump -f dist-windows/libusbK.dll
-          if ($LASTEXITCODE -ne 0 -or $peInfo -notmatch 'architecture: i386:x86-64') {
+          $peText = $peInfo -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $peText -notmatch 'architecture: i386:x86-64') {
             throw 'libusbK.dll is not an x64 PE binary'
           }
 
