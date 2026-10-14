@@ -64,8 +64,12 @@ static inline int ch347_model_valid(int model) { return model == CH347_MODEL_T |
 static inline uint16_t ch347_model_pid(int model) { return model == CH347_MODEL_F ? CH347F_SPI_PID : CH347T_SPI_PID; }
 static inline int ch347_model_interface(int model) { return model == CH347_MODEL_F ? CH347F_SPI_IF : CH347T_SPI_IF; }
 static inline const char *ch347_model_name(int model) { return model == CH347_MODEL_F ? "CH347F" : "CH347T"; }
-/* WCH CH347DLL device-info ChipMode: 1 = CH347T mode 1, 4 = CH347F. */
-static inline int ch347_model_wch_chip_mode(int model) { return model == CH347_MODEL_F ? 4 : 1; }
+/* WCH CH347DLL metadata for each programmer interface. CH347F is identified
+ * by GetChipType=2; its combined JTAG/I2C/SPI interface reports FuncType=3,
+ * ChipMode=0 and interface 4 in WCH's current SDK/demo. */
+static inline int ch347_model_wch_chip_type(int model) { return model == CH347_MODEL_F ? 2 : 1; }
+static inline int ch347_model_wch_func_type(int model) { return model == CH347_MODEL_F ? 3 : 1; }
+static inline int ch347_model_wch_chip_mode(int model) { return model == CH347_MODEL_F ? 0 : 1; }
 #define CH347_EPOUT 0x06
 #define CH347_EPIN 0x86
 

@@ -44,7 +44,10 @@ build excludes the separate database editor and updater.
   `4348:5512`; CH347T mode 1 is `1A86:55DB`; CH347F is `1A86:55DE` (SPI/I2C on
   interface 4). USB IDs do not distinguish A/B silicon. CH347T and CH347F are
   selected separately and never used as a fallback for each other. With the WCH
-  DLL backend, CH347F must report `ChipMode=4`.
+  DLL backend, current WCH headers/demo identify CH347F with `CH347GetChipType=2`;
+  its combined JTAG/I2C/SPI function reports `FuncType=3`, `ChipMode=0`, and
+  interface 4. The separately descriptor-verified bulk endpoints remain
+  `0x06`/`0x86`.
 - The backend first tries libusb with the existing driver. It does not install,
   replace, detach or reset drivers. Do not change a working driver just to try
   this build, and do not copy DLLs into System32.
@@ -67,6 +70,13 @@ download is [CH341PAR](https://www.wch-ic.com/downloads/CH341PAR_ZIP.html);
 [WCH's terms](https://www.wch-ic.com/statement.html) do not establish a clear
 unrestricted redistribution grant. Separate downloading or runtime loading does
 not itself resolve compatibility with the application's GPL obligations.
+
+The vendor fallback first loads an exact DLL name from the executable directory.
+If absent, it tries the same architecture-specific name by an absolute path in
+the protected Windows system directory, where WCH's official driver package
+installs it. It never searches the current directory or `PATH`. This System32
+fallback is restricted to `CH347DLL[A64].DLL` and `CH341DLL[A64].DLL`;
+`libusbK.dll` and `libusb-1.0.dll` remain strictly application-local.
 
 The included tests simulate transports and exercise the native Qt interface.
 They do not establish Windows startup, real driver compatibility, electrical

@@ -45,7 +45,9 @@ int main(void)
     struct ch347_priv *p;
     assert(ch347_model_pid(CH347_MODEL_T) == 0x55db && ch347_model_interface(CH347_MODEL_T) == 2);
     assert(ch347_model_pid(CH347_MODEL_F) == 0x55de && ch347_model_interface(CH347_MODEL_F) == 4);
-    assert(!strcmp(ch347_model_name(CH347_MODEL_F), "CH347F") && ch347_model_wch_chip_mode(CH347_MODEL_F) == 4);
+    assert(!strcmp(ch347_model_name(CH347_MODEL_F), "CH347F"));
+    assert(ch347_model_wch_chip_type(CH347_MODEL_F) == 2 && ch347_model_wch_func_type(CH347_MODEL_F) == 3);
+    assert(ch347_model_wch_chip_mode(CH347_MODEL_F) == 0);
     assert(ch347_selected_model() == CH347_MODEL_T); /* default keeps existing CH347T behaviour */
 
     attached_pid = 0x55de;

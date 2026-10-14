@@ -11,8 +11,9 @@ struct libusb_context { int unused; };
 struct libusb_device { int index; };
 struct libusb_device_handle { int index; };
 struct fake_state {
-    int missing_wch, missing_usbk, missing_libusb, missing_ch341;
-    int wch341_present[16], wch341_opens, wch341_closes, wch341_loads;
+    int missing_wch_app, missing_wch_system, missing_usbk, missing_libusb;
+    int missing_ch341_app, missing_ch341_system;
+    int wch341_present[16], wch341_opens, wch341_closes, wch341_loads, wch341_system_loads;
     int wch341_timeouts, wch341_reads, wch341_writes, wch341_exchanges;
     int wch341_actual, wch341_io_result, wch341_descriptor_length;
     uint16_t wch341_vid, wch341_pid;
@@ -22,9 +23,11 @@ struct fake_state {
     int async_calls, async_result;
     const char *missing_export;
     int wch_present[32], wch_bad_info[32];
-    int wch_wrong_mode, wch_ch347f, wch_timeout_result, wch_io_result, wch_actual;
-    int wch_loads, wch_opens, wch_closes, wch_timeouts, wch_reads, wch_writes;
+    int wch_wrong_mode, wch_wrong_chip_type, wch_ch347f, wch_timeout_result, wch_io_result, wch_actual;
+    int wch_loads, wch_system_loads, wch_opens, wch_closes, wch_timeouts, wch_reads, wch_writes;
     int usb_loads, usbk_loads, frees;
+    int load_path_count;
+    WCHAR load_paths[8][MAX_PATH];
     int usb_count, usb_init_result, usb_list_result, usb_open_result, usb_claim_result, usb_alt_result;
     int usb_bulk_result, usb_actual;
     int usb_init_calls, usb_exit_calls, usb_open_calls, usb_close_calls, usb_claim_calls;
@@ -89,18 +92,35 @@ DWORD GetModuleFileNameW(HMODULE module, WCHAR *out, DWORD capacity)
     wcscpy(out, path);
     return (DWORD)wcslen(path);
 }
+UINT GetSystemDirectoryW(WCHAR *out, UINT capacity)
+{
+    const wchar_t path[] = L"C:\\Windows\\System32";
+    assert(capacity > sizeof(path) / sizeof(path[0]));
+    wcscpy(out, path);
+    return (UINT)wcslen(path);
+}
 DWORD GetLastError(void) { return f.last_error; }
 void SetLastError(DWORD error) { f.last_error = error; }
 HMODULE LoadLibraryExW(const WCHAR *path, HANDLE reserved, DWORD flags)
 {
+    int app_local = wcsncmp(path, L"C:\\test\\", 8) == 0;
+    int system32 = wcsncmp(path, L"C:\\Windows\\System32\\", 20) == 0;
     assert(!reserved);
     assert(flags == (LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32));
-    assert(wcsncmp(path, L"C:\\test\\", 8) == 0);
+    assert(app_local || system32);
+    assert(f.load_path_count < (int)(sizeof(f.load_paths) / sizeof(f.load_paths[0])));
+    wcscpy(f.load_paths[f.load_path_count++], path);
     f.last_error = 126;
-    if (wcsstr(path, L"CH341DLLA64.DLL")) { ++f.wch341_loads; return f.missing_ch341 ? NULL : (HMODULE)(uintptr_t)4; }
-    if (wcsstr(path, L"CH347DLLA64.DLL")) { ++f.wch_loads; return f.missing_wch ? NULL : (HMODULE)(uintptr_t)1; }
-    if (wcsstr(path, L"libusbK.dll")) { ++f.usbk_loads; return f.missing_usbk ? NULL : (HMODULE)(uintptr_t)2; }
-    if (wcsstr(path, L"libusb-1.0.dll")) { ++f.usb_loads; return f.missing_libusb ? NULL : (HMODULE)(uintptr_t)3; }
+    if (wcsstr(path, L"CH341DLLA64.DLL") || wcsstr(path, L"CH341DLL.DLL")) {
+        if (system32) ++f.wch341_system_loads; else ++f.wch341_loads;
+        return (system32 ? f.missing_ch341_system : f.missing_ch341_app) ? NULL : (HMODULE)(uintptr_t)4;
+    }
+    if (wcsstr(path, L"CH347DLLA64.DLL") || wcsstr(path, L"CH347DLL.DLL")) {
+        if (system32) ++f.wch_system_loads; else ++f.wch_loads;
+        return (system32 ? f.missing_wch_system : f.missing_wch_app) ? NULL : (HMODULE)(uintptr_t)1;
+    }
+    if (wcsstr(path, L"libusbK.dll")) { assert(app_local); ++f.usbk_loads; return f.missing_usbk ? NULL : (HMODULE)(uintptr_t)2; }
+    if (wcsstr(path, L"libusb-1.0.dll")) { assert(app_local); ++f.usb_loads; return f.missing_libusb ? NULL : (HMODULE)(uintptr_t)3; }
     assert(!"unexpected DLL"); return NULL;
 }
 BOOL FreeLibrary(HMODULE module) { assert(module); ++f.frees; return TRUE; }
@@ -117,10 +137,15 @@ static BOOL fake_wch_info(ULONG index, wch_device_info *info)
     if (f.wch_bad_info[index]) return FALSE;
     memset(info, 0, sizeof(*info));
     strcpy(info->DeviceID, f.wch_ch347f ? "USB\\VID_1A86&PID_55DE&MI_04" : "USB\\VID_1A86&PID_55DB");
-    info->FuncType = 1; info->ChipMode = f.wch_wrong_mode ? 3 : (f.wch_ch347f ? 4 : 1);
-    info->CH347IfNum = 7; info->DataDnEndp = 0x06; info->DataUpEndp = 0x86;
+    info->FuncType = f.wch_ch347f ? 3 : 1;
+    info->ChipMode = f.wch_wrong_mode ? 3 : (f.wch_ch347f ? 0 : 1);
+    info->CH347IfNum = f.wch_ch347f ? CH347F_SPI_IF : 7;
+    /* WCH reports endpoint numbers here; direction is supplied by Read/Write. */
+    info->DataDnEndp = info->DataUpEndp = 0x06;
     return TRUE;
 }
+static UCHAR fake_wch_chip_type(ULONG index)
+{ (void)index; return f.wch_wrong_chip_type ? 0 : (f.wch_ch347f ? 2 : 1); }
 static BOOL fake_wch_timeout(ULONG index, ULONG write, ULONG read)
 { (void)index; assert(write > 0 && read > 0); ++f.wch_timeouts; return f.wch_timeout_result; }
 static BOOL fake_wch_read(ULONG index, PVOID data, PULONG size)
@@ -211,6 +236,7 @@ FARPROC GetProcAddress(HMODULE module, const char *name)
         EXPORT("CH347OpenDevice", fake_wch_open)
         EXPORT("CH347CloseDevice", fake_wch_close)
         EXPORT("CH347GetDeviceInfor", fake_wch_info)
+        EXPORT("CH347GetChipType", fake_wch_chip_type)
         EXPORT("CH347SetTimeout", fake_wch_timeout)
         EXPORT("CH347ReadData", fake_wch_read)
         EXPORT("CH347WriteData", fake_wch_write)
@@ -253,6 +279,40 @@ int main(void)
     struct ch347_priv p = {0};
     unsigned char packet[8] = {0};
     int transferred;
+
+#ifdef _WIN64
+    const wchar_t *expected_ch347_dll = L"CH347DLLA64.DLL";
+    const wchar_t *expected_ch341_dll = L"CH341DLLA64.DLL";
+#else
+    const wchar_t *expected_ch347_dll = L"CH347DLL.DLL";
+    const wchar_t *expected_ch341_dll = L"CH341DLL.DLL";
+#endif
+
+    /* Vendor DLLs use only explicit app-local then System32 paths. libusb
+     * helpers remain app-local and never inherit the WCH fallback. */
+    reset(); f.usb_count = 1; f.usb_open_result = LIBUSB_ERROR_ACCESS;
+    f.missing_wch_app = 1; f.wch_present[0] = 1;
+    CHECK(ch347_windows_open(&p) == 0);
+    CHECK(f.wch_loads == 1 && f.wch_system_loads == 1);
+    CHECK(f.load_path_count == 4);
+    CHECK(wcscmp(f.load_paths[0], L"C:\\test\\libusbK.dll") == 0);
+    CHECK(wcscmp(f.load_paths[1], L"C:\\test\\libusb-1.0.dll") == 0);
+    CHECK(wcsncmp(f.load_paths[2], L"C:\\test\\", 8) == 0 && wcsstr(f.load_paths[2], expected_ch347_dll));
+    CHECK(wcsncmp(f.load_paths[3], L"C:\\Windows\\System32\\", 20) == 0 && wcsstr(f.load_paths[3], expected_ch347_dll));
+    CHECK(strstr(ch347_windows_last_report(), "System32 WCH DLL load: success") != NULL);
+    ch347_windows_close(&p);
+
+    reset(); f.usb_count = 1; f.usb_open_result = LIBUSB_ERROR_ACCESS;
+    f.missing_wch_app = f.missing_wch_system = 1;
+    CHECK(ch347_windows_open(&p) != 0 && f.wch_opens == 0);
+    CHECK(strstr(ch347_windows_last_report(), "app-local (Windows error 126) and System32 (Windows error 126)") != NULL);
+
+    reset(); f.usb_count = 1; make_ch341(0, 0x1a86); f.usb_open_result = LIBUSB_ERROR_ACCESS;
+    f.missing_ch341_app = 1; f.wch341_present[0] = 1;
+    CHECK(ch341_windows_open(&p) == 0);
+    CHECK(f.wch341_loads == 1 && f.wch341_system_loads == 1);
+    CHECK(wcsncmp(f.load_paths[3], L"C:\\Windows\\System32\\", 20) == 0 && wcsstr(f.load_paths[3], expected_ch341_dll));
+    ch347_windows_close(&p);
 
     /* WCH is selected only after a successful single-device preflight. */
     reset(); f.usb_count = 1; f.usb_open_result = LIBUSB_ERROR_ACCESS; f.wch_present[0] = 1;
@@ -339,12 +399,15 @@ int main(void)
     CHECK(ch347_windows_open(&p) != 0 && f.usb_open_calls == 0 && f.usb_claim_calls == 0 && !p.windows_backend);
     reset(); f.wch_present[0] = 1; f.wch_ch347f = 1;
     CHECK(ch347_windows_open(&p) == 0 && f.wch_timeouts == 1);
+    CHECK(strstr(ch347_windows_last_report(), "ChipType=2 FuncType=3 ChipMode=0 Interface=4") != NULL);
     ch347_windows_close(&p);
     reset(); f.wch_present[0] = 1; /* WCH reports CH347T mode 1 */
     CHECK(ch347_windows_open(&p) != 0 && f.wch_timeouts == 0 &&
           strstr(ch347_windows_last_error(), "no matching CH347F") != NULL);
     reset(); f.wch_present[0] = f.wch_present[1] = 1; f.wch_ch347f = 1;
     CHECK(ch347_windows_open(&p) == -EEXIST && !p.windows_backend);
+    reset(); f.wch_present[0] = 1; f.wch_ch347f = 1; f.wch_wrong_chip_type = 1;
+    CHECK(ch347_windows_open(&p) != 0 && f.wch_timeouts == 0);
     reset(); f.usb_count = 1; f.descriptors[0].idProduct = CH347F_SPI_PID;
     CHECK(ch347_windows_diagnose() == 0 && f.usb_claim_calls == 0 && f.usb_bulk_calls == 0);
     ch347_windows_select_model(CH347_MODEL_T);
@@ -505,7 +568,7 @@ int main(void)
     reset();
     CHECK(ch347_windows_open(NULL) == -EINVAL);
     CHECK(f.wch_loads == 0 && f.usb_loads == 0);
-    puts("Windows backend integration: explicit CH341/CH347 family selection, existing-driver libusb/WCH fallback, secure app-local loading, descriptor-selected interface/alternate, ambiguity refusal, cleanup, diagnostic no-I/O and no transfer retries/backend switching passed.");
+    puts("Windows backend integration: explicit CH341/CH347 family selection, app-local/System32-exact WCH loading with app-local-only libusb, SDK-backed CH347F metadata, descriptor-selected interface/alternate, ambiguity refusal, cleanup, diagnostic no-I/O and no transfer retries/backend switching passed.");
     printf("PASS: %d backend assertions against production C (fake Windows/DLL/USB APIs; no hardware I/O)\n", checks);
     return 0;
 }

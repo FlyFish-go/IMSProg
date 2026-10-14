@@ -18,6 +18,12 @@ an existing working driver unchanged. No WCH vendor DLL is included because its
 public redistribution permission and GPL compatibility have not been
 established.
 
+If an official WCH driver installation already provides CH347DLLA64.DLL or
+CH341DLLA64.DLL in the Windows system directory, IMSProg can use that installed
+copy as a vendor-backend fallback. The exact application-local name is tried
+first, followed only by an absolute System32 path. The general current directory
+and PATH are never searched, and the bundled libusb DLLs remain application-local.
+
 For a cautious first check, disconnect the flash chip, start IMSProg, and run
 connection diagnostics. Then verify voltage, signal-level conversion, wiring,
 and board documentation. Start with repeated read-only dumps and compare

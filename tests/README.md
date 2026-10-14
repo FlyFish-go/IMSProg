@@ -90,7 +90,9 @@ python3 tests/ui_windows_conformance.py
 ```
 
 The backend tests cover explicit family selection, mock libusb/WCH fallback,
-metadata-only diagnostics, errors and cleanup. CH341 asynchronous APIs are
+metadata-only diagnostics, errors and cleanup. They compile both x64 and x86
+WCH DLL naming branches and verify the exact app-local-then-System32 path order;
+libusb helpers are required to remain application-local. CH341 asynchronous APIs are
 checked before interface claim or GPIO/SPI setup; missing exports cannot leave a
 partially initialized function table. Transfer errors never switch backends or
 retry commands. CH341 asynchronous cancellation drains callbacks before buffers

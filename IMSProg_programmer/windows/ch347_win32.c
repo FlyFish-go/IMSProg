@@ -51,6 +51,7 @@ typedef BOOL (WINAPI *wch341_write_read_fn)(ULONG, ULONG, PVOID, ULONG, ULONG, P
 typedef BOOL (WINAPI *wch_io_fn)(ULONG, PVOID, PULONG);
 typedef BOOL (WINAPI *wch_timeout_fn)(ULONG, ULONG, ULONG);
 typedef BOOL (WINAPI *wch_info_fn)(ULONG, wch_device_info *);
+typedef UCHAR (WINAPI *wch_chip_type_fn)(ULONG);
 
 typedef int (LIBUSB_CALL *usb_init_fn)(libusb_context **);
 typedef void (LIBUSB_CALL *usb_exit_fn)(libusb_context *);
@@ -102,6 +103,7 @@ struct windows_backend {
     wch_io_fn write;
     wch_timeout_fn timeout;
     wch_info_fn info;
+    wch_chip_type_fn chip_type;
 };
 
 enum { FAMILY_CH347 = 0, FAMILY_CH341 = 1 };
@@ -193,6 +195,81 @@ static HMODULE load_app_dll(const WCHAR *name, const char *display_name)
     return module;
 }
 
+/* WCH's signed driver package installs its matching vendor DLL in the Windows
+ * system directory. Prefer an explicitly bundled copy so portable deployments
+ * remain deterministic, then try that protected install location by absolute
+ * path. Never use the current directory, PATH or the unrestricted DLL search. */
+static HMODULE load_wch_dll(const WCHAR *name, const char *display_name)
+{
+    WCHAR path[32768];
+    const size_t capacity = sizeof(path) / sizeof(path[0]);
+    DWORD n, app_error, system_error;
+    WCHAR *slash;
+    HMODULE module;
+
+    n = GetModuleFileNameW(NULL, path, (DWORD)capacity);
+    if (!n || n >= capacity) {
+        report_error("WCH DLL path: GetModuleFileNameW failed or truncated (Windows error %lu).", GetLastError());
+        return NULL;
+    }
+    slash = wcsrchr(path, L'\\');
+    if (!slash) {
+        report_error("WCH DLL path: executable directory not found.");
+        return NULL;
+    }
+    slash[1] = 0;
+    if (wcslen(path) + wcslen(name) >= capacity) {
+        report_error("WCH DLL path: executable path is too long.");
+        return NULL;
+    }
+    wcscat(path, name);
+    report_append("Loading app-local WCH DLL: %s.\n", display_name);
+    SetLastError(0);
+    module = LoadLibraryExW(path, NULL,
+                            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (module) {
+        report_append("App-local WCH DLL load: success.\n");
+        return module;
+    }
+    app_error = GetLastError();
+    report_append("App-local WCH DLL load failed (Windows error %lu); trying the installed System32 copy.\n",
+                  app_error);
+
+    SetLastError(0);
+    n = GetSystemDirectoryW(path, (UINT)capacity);
+    if (!n || n >= capacity) {
+        system_error = GetLastError();
+        report_error("WCH DLL load failed: app-local Windows error %lu; GetSystemDirectoryW failed or truncated (Windows error %lu).",
+                     app_error, system_error);
+        return NULL;
+    }
+    if (path[n - 1] != L'\\') {
+        if ((size_t)n + 1 >= capacity) {
+            report_error("WCH DLL load failed: app-local Windows error %lu; System32 path is too long.", app_error);
+            return NULL;
+        }
+        path[n++] = L'\\';
+        path[n] = 0;
+    }
+    if ((size_t)n + wcslen(name) >= capacity) {
+        report_error("WCH DLL load failed: app-local Windows error %lu; System32 DLL path is too long.", app_error);
+        return NULL;
+    }
+    wcscat(path, name);
+    report_append("Loading installed WCH DLL from the absolute System32 path: %s.\n", display_name);
+    SetLastError(0);
+    module = LoadLibraryExW(path, NULL,
+                            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!module) {
+        system_error = GetLastError();
+        report_error("WCH DLL load failed from app-local (Windows error %lu) and System32 (Windows error %lu). Check the official WCH driver/DLL installation and architecture.",
+                     app_error, system_error);
+        return NULL;
+    }
+    report_append("System32 WCH DLL load: success.\n");
+    return module;
+}
+
 static void begin_connection_report(int diagnostic_only, int family)
 {
     char previous[sizeof(last_error)];
@@ -218,17 +295,19 @@ static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
     char pid_text[16];
     if (!p) { report_error("Open: invalid device context."); return -EINVAL; }
     snprintf(pid_text, sizeof(pid_text), "PID_%04X", ch347_model_pid(model));
-    report_append("Trying official WCH vendor backend (class 0, SPI/I2C function 1, %s ChipMode %d).\n",
-                  ch347_model_name(model), ch347_model_wch_chip_mode(model));
+    report_append("Trying official WCH vendor backend (class 0, %s chip type %d, function %d, ChipMode %d%s).\n",
+                  ch347_model_name(model), ch347_model_wch_chip_type(model),
+                  ch347_model_wch_func_type(model), ch347_model_wch_chip_mode(model),
+                  model == CH347_MODEL_F ? ", interface 4" : "");
     b = (struct windows_backend *)calloc(1, sizeof(*b));
     if (!b) { report_error("Open: out of memory."); return -ENOMEM; }
     b->family = FAMILY_CH347;
     b->out_endpoint = 0x06; b->in_endpoint = 0x86;
     p->windows_backend = b;
 #ifdef _WIN64
-    b->module = load_app_dll(L"CH347DLLA64.DLL", "CH347DLLA64.DLL");
+    b->module = load_wch_dll(L"CH347DLLA64.DLL", "CH347DLLA64.DLL");
 #else
-    b->module = load_app_dll(L"CH347DLL.DLL", "CH347DLL.DLL");
+    b->module = load_wch_dll(L"CH347DLL.DLL", "CH347DLL.DLL");
 #endif
     if (!b->module) goto fail;
 #define LOAD_MEMBER(member, type, name) do { \
@@ -243,6 +322,7 @@ static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
     LOAD_MEMBER(write, wch_io_fn, "CH347WriteData");
     LOAD_MEMBER(timeout, wch_timeout_fn, "CH347SetTimeout");
     LOAD_MEMBER(info, wch_info_fn, "CH347GetDeviceInfor");
+    LOAD_MEMBER(chip_type, wch_chip_type_fn, "CH347GetChipType");
 #undef LOAD_MEMBER
     report_append("DLL required exports: success. Device-info packed size: %u.\n", (unsigned)sizeof(wch_device_info));
     for (ULONG i = 0; i < 32; ++i) {
@@ -250,6 +330,7 @@ static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
         HANDLE h = b->open(i);
         DWORD open_error = GetLastError();
         wch_device_info info;
+        UCHAR chip_type;
         /* WCH documents a device-index result: index 0 is valid. */
         if (h == INVALID_HANDLE_VALUE) {
             report_append("Index %lu: OpenDevice failed, Windows error %lu.\n", i, open_error);
@@ -267,13 +348,17 @@ static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
         info.DeviceID[sizeof(info.DeviceID) - 1] = '\0';
         for (size_t j = 0; j < sizeof(info.DeviceID); ++j)
             if (info.DeviceID[j] >= 'a' && info.DeviceID[j] <= 'z') info.DeviceID[j] -= 'a' - 'A';
-        report_append("Index %lu: ID=%s; UsbClass=%u FuncType=%u ChipMode=%u Interface=%u; EP in=0x%02X out=0x%02X; firmware=0x%02X.\n",
-                      i, info.DeviceID, info.UsbClass, info.FuncType, info.ChipMode,
+        chip_type = b->chip_type(i);
+        report_append("Index %lu: ID=%s; UsbClass=%u ChipType=%u FuncType=%u ChipMode=%u Interface=%u; WCH endpoint numbers up=0x%02X down=0x%02X; firmware=0x%02X.\n",
+                      i, info.DeviceID, info.UsbClass, chip_type, info.FuncType, info.ChipMode,
                       info.CH347IfNum, info.DataUpEndp, info.DataDnEndp, info.FirewareVer);
-        if (info.UsbClass != 0 || info.FuncType != 1 || info.ChipMode != ch347_model_wch_chip_mode(model) ||
+        if (info.UsbClass != 0 || chip_type != ch347_model_wch_chip_type(model) ||
+            info.FuncType != ch347_model_wch_func_type(model) ||
+            info.ChipMode != ch347_model_wch_chip_mode(model) ||
+            (model == CH347_MODEL_F && info.CH347IfNum != CH347F_SPI_IF) ||
             !strstr(info.DeviceID, "VID_1A86") || !strstr(info.DeviceID, pid_text)) {
             ++rejected_count;
-            report_append("Index %lu: excluded by this port's mode/driver/function/VID-PID filter.\n", i);
+            report_append("Index %lu: excluded by this port's chip/interface/mode/driver/function/VID-PID filter.\n", i);
             b->close(i);
             continue;
         }
@@ -352,9 +437,9 @@ static int windows341_open_impl(struct ch347_priv *p, int diagnostic_only)
     p->windows_backend = b;
     report_append("Trying CH341 vendor DLL; VID/PID and bulk configuration are verified before any SPI command.\n");
 #ifdef _WIN64
-    b->module = load_app_dll(L"CH341DLLA64.DLL", "CH341DLLA64.DLL");
+    b->module = load_wch_dll(L"CH341DLLA64.DLL", "CH341DLLA64.DLL");
 #else
-    b->module = load_app_dll(L"CH341DLL.DLL", "CH341DLL.DLL");
+    b->module = load_wch_dll(L"CH341DLL.DLL", "CH341DLL.DLL");
 #endif
     if (!b->module) goto fail;
 #define LOAD_341(member, type, name) do { \
