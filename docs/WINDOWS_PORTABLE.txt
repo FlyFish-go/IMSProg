@@ -34,3 +34,17 @@ particular PC, electrical safety, chip correctness, or throughput.
 See WINDOWS_CH347.md for build, backend, connection, and safety details.
 Third-party notices and the modified libusb corresponding source are included
 under LICENSES and SOURCE.
+
+Chip database tools
+-------------------
+IMSProg_database_update.exe downloads the upstream chip database. Open it from
+File > Update chip database, or run it directly. Close the editor before updating;
+restart IMSProg after a successful update. The updater writes the shared user
+IMSProg.Dat under the Windows application-data directory; the main program gives
+that file priority over the database supplied beside IMSProg.exe.
+
+IMSProg_editor.exe edits chip records manually. File > Edit chips Database opens
+it. To edit an online-updated database, open the shared user IMSProg.Dat, then
+save back to the same location. Updating again replaces those custom records.
+Online updates require Internet access and use the original project's HTTPS
+endpoint; the package includes the Qt Network and Windows TLS runtime.

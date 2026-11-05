@@ -133,6 +133,11 @@ else()
     target_link_libraries(${PROJECT_NAME} PRIVATE Qt::Core Qt::Widgets)
 endif()
 
+if(WIN32)
+    set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE TRUE)
+    install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION .)
+    install(FILES ${QM_FILES} DESTINATION .)
+else()
 install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
@@ -145,3 +150,5 @@ install(FILES ${QM_FILES} DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/imsprog")
 
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/other/IMSProg_editor.1.gz" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/man/man1")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/other/io.github.bigbigmdm.imsprog_editor.metainfo.xml" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/metainfo")
+
+endif()

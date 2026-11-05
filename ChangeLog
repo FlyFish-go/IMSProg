@@ -1,3 +1,8 @@
+- Ver. 1.9.2 - Refreshed main-window layout with scrollable chip settings and
+persistent operation controls, clearer independent NAND ECC/OOB tooltips,
+updated Simplified Chinese text and fixed-width editor font. Included the
+Windows database updater/editor with atomic database replacement. Added
+verified Windows portable release publication after regression/build checks.
 - Ver. 1.9.1 - Added support for the FH232H v1.2 device. The chip's delay 
 database parameter is now used to adjust the SPI and I2C bus speed.
 - Ver. 1.8.6 - Unused files removed, copyright added/changed. Added support for 

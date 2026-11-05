@@ -77,6 +77,7 @@ public slots:
     void receiveNandStatus(uint8_t);
 
 private slots:
+    void setupAppearance();
     void progInit();
     void on_pushButton_clicked();
     void on_pushButton_2_clicked();

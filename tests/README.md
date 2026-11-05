@@ -117,3 +117,11 @@ sh tests/ui_run_tests.sh build-linux
 
 These UI tests replace all hardware calls. The Python UI check only inspects
 source and is not a Windows GUI execution test.
+
+## Database updater
+
+After a native Qt5 build, run `sh tests/run_database_updater_tests.sh build-linux`.
+This exercises the actual updater with fake completed replies: valid database
+replacement, malformed/truncated downloads, network/save failures and resource
+cleanup. Failures preserve the existing database. This does not contact the
+upstream server or establish Windows TLS/network availability.

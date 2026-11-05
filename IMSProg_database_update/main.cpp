@@ -51,6 +51,11 @@ static void initPaths()
     QString binRelPath = QDir::cleanPath(binDir.absoluteFilePath("../share/" + QCoreApplication::applicationName()));
     allPaths.append(binRelPath);
 
+#ifdef Q_OS_WIN
+    // Match the programmer's portable translation lookup and shared user database.
+    allPaths.insert(1, binDir.absolutePath());
+#endif
+
     QDir userAppDataLocation(allPaths.at(0));
     if (!userAppDataLocation.exists()) {
 		userAppDataLocation.mkpath(".");

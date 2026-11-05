@@ -181,13 +181,22 @@ void MainWindow::onFinished()
 
     // Check if the download completed without network errors
     if (reply->error() == QNetworkReply::NoError) {
-        if (totalBytesReceived > 0x88) {
-            tempFile->close();
-
-            QFile::remove(fileName);
-            if (tempFile->copy(fileName)) {
+        tempFile->flush();
+        tempFile->seek(0);
+        const QByteArray database = tempFile->readAll();
+        // Fixed-size records plus the zero terminator used by the main reader.
+        const bool validSize = database.size() > 0x88 && database.size() % 0x44 == 0;
+        const bool validEnd = database.endsWith(QByteArray(0x44, '\0'));
+        const bool validStart = database.startsWith("SPI_FLASH,") || database.startsWith("SPI_NAND,") ||
+            database.startsWith("24_EEPROM,") || database.startsWith("25_EEPROM,") ||
+            database.startsWith("45_EEPROM,") || database.startsWith("93_EEPROM,") ||
+            database.startsWith("95_EEPROM,");
+        if (validSize && validEnd && validStart) {
+            QSaveFile destination(fileName);
+            if (destination.open(QIODevice::WriteOnly) &&
+                destination.write(database) == database.size() && destination.commit()) {
                 success = true;
-                newRecords = static_cast<int>(totalBytesReceived / 0x44 - 1);
+                newRecords = static_cast<int>(database.size() / 0x44 - 1);
                 ui->progressBar->setValue(100);
                 QString msg = (tr("The database has been updated!\n\nThe old database contained %1 chips,\nThe new database contains %2 chips."))
                                   .arg(oldRecords).arg(newRecords);
@@ -196,7 +205,7 @@ void MainWindow::onFinished()
                 showError(tr("Failed to replace the database file"));
             }
         } else {
-            showError(tr("Downloaded file is too small (corrupted?)"));
+            showError(tr("Downloaded file is not a valid IMSProg chip database. The existing database was preserved."));
         }
     }
 

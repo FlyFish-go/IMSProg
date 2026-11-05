@@ -2372,6 +2372,62 @@ Need: FF</source>
     <message><source>CH347F Standard (30 MHz)</source><translation>CH347F 标准（30 MHz）</translation></message>
     <message><source>CH347F High speed (NAND 60 MHz)</source><translation>CH347F 高速（NAND 60 MHz）</translation></message>
     <message><source>CH347F Low speed (7.5 MHz)</source><translation>CH347F 低速（7.5 MHz）</translation></message>
+    <message>
+        <source>IMSProg 1.9.2 — SPI / I2C / MicroWire Programmer</source>
+        <translation>IMSProg 1.9.2 — SPI / I2C / MicroWire 编程器</translation>
+    </message>
+    <message>
+        <source>IMSProg 1.9.2 - CH341A/B + CH347T/F Windows SPI</source>
+        <translation>IMSProg 1.9.2 - CH341A/B + CH347T/F Windows SPI</translation>
+    </message>
+    <message>
+        <source>Chip configuration</source>
+        <translation>芯片配置</translation>
+    </message>
+    <message>
+        <source>Operation sequence</source>
+        <translation>操作序列</translation>
+    </message>
+    <message>
+        <source>Run</source>
+        <translation>执行</translation>
+    </message>
+    <message>
+        <source>Run the checked operations in order: erase, blank check, program, verify.</source>
+        <translation>按顺序执行勾选的操作：擦除、查空、写入、校验。</translation>
+    </message>
+    <message>
+        <source>Spare bytes per physical page. This is the OOB size, not the ECC correction strength.</source>
+        <translation>每个物理页的备用区字节数。这是 OOB 大小，不是 ECC 纠错能力。</translation>
+    </message>
+    <message>
+        <source>Choose the image layout independently of on-die ECC. Main + OOB includes each page's spare bytes.</source>
+        <translation>镜像布局与片内 ECC 独立选择。“主数据 + OOB”包含每页的备用区字节。</translation>
+    </message>
+    <message>
+        <source>On: the chip checks/corrects page data and may report uncorrectable ECC. Off: read without chip correction; returned data may contain bit errors. Applied and read back when an operation starts.</source>
+        <translation>开启：芯片检查并纠正页数据，可能报告不可纠正的 ECC 错误。关闭：不进行片内纠错，读出的数据可能存在位错误。操作开始时应用设置并回读确认。</translation>
+    </message>
+    <message>
+        <source>Chip voltage from the database. Selecting this value does not set the programmer's supply or signal voltage.</source>
+        <translation>芯片数据库中的电压参数。选择该值不会设置编程器的供电或信号电压。</translation>
+    </message>
+    <message>
+        <source>Update chip database…</source>
+        <translation>更新芯片数据库…</translation>
+    </message>
+    <message>
+        <source>Cannot start the chip database updater.</source>
+        <translation>无法启动芯片数据库更新程序。</translation>
+    </message>
+    <message>
+        <source>Chip database</source>
+        <translation>芯片数据库</translation>
+    </message>
+    <message>
+        <source>Complete the update in the updater window, then restart IMSProg to load the updated chip database.</source>
+        <translation>请在更新程序窗口中完成更新，然后重启 IMSProg 以加载更新后的芯片数据库。</translation>
+    </message>
 </context>
 <context>
     <name>SearchDialog</name>

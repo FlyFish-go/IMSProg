@@ -49,6 +49,8 @@
 #include <QVBoxLayout>
 #include <QDialogButtonBox>
 #include <QClipboard>
+#include <QScrollArea>
+#include <QFormLayout>
 #ifdef _WIN32
 #include "windows/ch347_win32.h"
 #endif
@@ -59,12 +61,15 @@ MainWindow::MainWindow(QWidget *parent) :
     ui(new Ui::MainWindow)
 {
  ui->setupUi(this);
+ setupAppearance();
 
  max_rec = 0;
  isHalted = false;
  lastDirectory = QDir::homePath(); //"/home/";
- grnKeyStyle = "QPushButton{color:#fff;background-color: rgb(120, 183, 140);border-radius: 20px;border: 2px solid #094065;border-radius:8px;font-weight:600;}QPushButton::pressed{background-color: rgb(115, 210, 22);}";
- redKeyStyle = "QPushButton{color:#fff;background-color:#f66;border-radius: 20px;border: 2px solid #094065;border-radius:8px;font-weight:600;}";
+ grnKeyStyle = "QPushButton { color: white; background: #2563eb; border: 1px solid #1d4ed8; border-radius: 6px; padding: 5px 12px; font-weight: 600; } QPushButton:hover { background: #1d4ed8; } QPushButton:pressed { background: #1e40af; } QPushButton:disabled { color: palette(mid); background: palette(button); border-color: palette(mid); } QPushButton:focus { border: 2px solid palette(highlight); }";
+ redKeyStyle = "QPushButton { color: white; background: #b45309; border: 1px solid #92400e; border-radius: 6px; padding: 5px 12px; font-weight: 600; }";
+ for (QPushButton *button : {ui->pushButton, ui->pushButton_2, ui->pushButton_3, ui->pushButton_4})
+     button->setStyleSheet(grnKeyStyle);
  timer = new QTimer();
  connect(timer, SIGNAL(timeout()), this, SLOT(slotTimerAlarm()));
  timer->start(2000); //10000
@@ -206,6 +211,8 @@ MainWindow::MainWindow(QWidget *parent) :
  ProgDeviceClose(current_programmer);
  QFont heFont;
  heFont = QFont("Monospace", 10);
+ heFont.setStyleHint(QFont::TypeWriter);
+ heFont.setFixedPitch(true);
  hexEdit = new QHexEdit(ui->frame);
  hexEdit->setData(chipData);
  hexEdit->setHexCaps(true);
@@ -228,6 +235,97 @@ MainWindow::MainWindow(QWidget *parent) :
  updateNandControlVisibility();
  updateNandSelectionInfo();
  if (cmdStarted) on_actionOpen_triggered();
+}
+
+void MainWindow::setupAppearance()
+{
+    setWindowTitle(tr("IMSProg 1.9.2 — SPI / I2C / MicroWire Programmer"));
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    ui->horizontalLayout_3->setContentsMargins(12, 12, 12, 12);
+    ui->horizontalLayout_3->setSpacing(14);
+
+    // Keep the editor usable on small screens and when display scaling grows.
+    ui->horizontalLayout_3->removeItem(ui->verticalLayout_5);
+    QWidget *parameters = new QWidget(this);
+    parameters->setLayout(ui->verticalLayout_5);
+    ui->verticalLayout_5->setContentsMargins(0, 0, 8, 0);
+    ui->verticalLayout_5->setSpacing(14);
+    parameters->setMinimumWidth(350);
+    parameters->setMaximumWidth(430);
+    ui->verticalLayout_5->removeWidget(ui->groupBox);
+    QScrollArea *parameterScroll = new QScrollArea(parameters);
+    parameterScroll->setObjectName("parameterScroll");
+    parameterScroll->setFrameShape(QFrame::NoFrame);
+    parameterScroll->setWidgetResizable(true);
+    parameterScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    parameterScroll->setWidget(ui->groupBox);
+    ui->verticalLayout_5->insertWidget(0, parameterScroll, 1);
+
+    // Read/detect and the operation sequence remain reachable while scrolling.
+    ui->formLayout->removeWidget(ui->pushButton_2);
+    ui->horizontalLayout->removeWidget(ui->pushButton);
+    QHBoxLayout *readActions = new QHBoxLayout;
+    readActions->addWidget(ui->pushButton_2);
+    readActions->addWidget(ui->pushButton);
+    ui->formLayout->removeWidget(ui->label_nandInfo);
+    ui->verticalLayout_5->insertWidget(1, ui->label_nandInfo);
+    ui->verticalLayout_5->insertLayout(2, readActions);
+    ui->horizontalLayout_3->insertWidget(0, parameters);
+    ui->horizontalLayout_3->setStretch(0, 0);
+    ui->horizontalLayout_3->setStretch(1, 1);
+
+    const QString panelStyle = "QGroupBox { font-weight: 600; border: 1px solid palette(mid); border-radius: 8px; margin-top: 10px; padding: 12px 8px 8px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }";
+    for (QGroupBox *group : {ui->groupBox, ui->groupBox_2})
+    {
+        group->setMaximumWidth(QWIDGETSIZE_MAX);
+        group->setStyleSheet(panelStyle);
+    }
+    ui->formLayout->setVerticalSpacing(5);
+    ui->formLayout->setHorizontalSpacing(10);
+    ui->formLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    for (QComboBox *combo : ui->groupBox->findChildren<QComboBox *>())
+    {
+        combo->setMinimumHeight(28);
+        combo->setMaximumHeight(QWIDGETSIZE_MAX);
+        combo->setMaximumWidth(QWIDGETSIZE_MAX);
+        combo->setMinimumContentsLength(12);
+        QFont font = combo->font();
+        font.setBold(false);
+        combo->setFont(font);
+        combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+    ui->groupBox->setTitle(tr("Chip configuration"));
+    ui->groupBox_2->setTitle(tr("Operation sequence"));
+    ui->pushButton_3->setText(tr("Run"));
+    ui->pushButton_3->setToolTip(tr("Run the checked operations in order: erase, blank check, program, verify."));
+    ui->comboBox_ECC->setToolTip(tr("Spare bytes per physical page. This is the OOB size, not the ECC correction strength."));
+    ui->comboBox_raw->setToolTip(tr("Choose the image layout independently of on-die ECC. Main + OOB includes each page's spare bytes."));
+    ui->comboBox_onDieEcc->setToolTip(tr("On: the chip checks/corrects page data and may report uncorrectable ECC. Off: read without chip correction; returned data may contain bit errors. Applied and read back when an operation starts."));
+    ui->comboBox_vcc->setToolTip(tr("Chip voltage from the database. Selecting this value does not set the programmer's supply or signal voltage."));
+    ui->label_nandInfo->setMinimumWidth(0);
+    ui->label_nandInfo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
+    ui->label_nandInfo->setStyleSheet("QLabel { background: palette(alternate-base); border: 1px solid palette(mid); border-radius: 6px; padding: 8px; }");
+    ui->mainToolBar->setIconSize(QSize(24, 24));
+    ui->progressBar->setMinimumHeight(20);
+    ui->eStatus->setMaximumWidth(QWIDGETSIZE_MAX);
+    ui->eStatus->setMinimumWidth(ui->eStatus->fontMetrics().boundingRect(tr("Not connected")).width() + 24);
+    QAction *updateDatabase = new QAction(tr("Update chip database…"), this);
+    updateDatabase->setObjectName("actionUpdateChipDatabase");
+    ui->menuFile->insertAction(ui->actionEdit_chips_Database, updateDatabase);
+    connect(updateDatabase, &QAction::triggered, this, [this] {
+        if (ui->actionStop->isEnabled()) return;
+#ifdef Q_OS_WIN
+        const QString executable = "IMSProg_database_update.exe";
+#else
+        const QString executable = "IMSProg_database_update";
+#endif
+        QString path = QDir(QCoreApplication::applicationDirPath()).filePath(executable);
+        if (!QFileInfo::exists(path)) path = QStandardPaths::findExecutable(executable);
+        if (path.isEmpty() || !QProcess::startDetached(path, QStringList()))
+            QMessageBox::warning(this, tr("Error"), tr("Cannot start the chip database updater."));
+        else
+            QMessageBox::information(this, tr("Chip database"), tr("Complete the update in the updater window, then restart IMSProg to load the updated chip database."));
+    });
 }
 
 MainWindow::~MainWindow()
@@ -1815,12 +1913,12 @@ void MainWindow::ch341StatusFlashing()
     if (statusCH341 == 0)
     {
         ui->eStatus->setText(tr("Connected"));
-        ui->eStatus -> setStyleSheet("QLineEdit {border: 2px solid gray;border-radius: 5px;color:#000;background:#9f0;font-weight:600;border-style:inset;}");
+        ui->eStatus -> setStyleSheet("QLineEdit {border: 1px solid #15803d;border-radius: 4px;color:#fff;background:#15803d;font-weight:600;padding:2px 6px;}");
     }
     else
     {
         ui->eStatus->setText(tr("Not connected"));
-        ui->eStatus -> setStyleSheet("QLineEdit {border: 2px solid gray;border-radius: 5px;color:#fff;background:#f00;font-weight:600;border-style:inset;}");
+        ui->eStatus -> setStyleSheet("QLineEdit {border: 1px solid #64748b;border-radius: 4px;color:#fff;background:#64748b;font-weight:600;padding:2px 6px;}");
     }
 }
 
@@ -2072,7 +2170,7 @@ void MainWindow::on_actionChecksum_calculate_triggered()
 void MainWindow::on_actionEdit_chips_Database_triggered()
 {
     #ifdef _WIN32
-        QString programPath = "./IMSProg_editor.exe";
+        QString programPath = QDir(QCoreApplication::applicationDirPath()).filePath("IMSProg_editor.exe");
     #else
     QString programPath = "./IMSProg_editor";
     #endif
@@ -2104,6 +2202,7 @@ void MainWindow::on_actionEdit_chips_Database_triggered()
 
 void MainWindow::doNotDisturb()
 {
+   findChild<QAction *>("actionUpdateChipDatabase")->setDisabled(true);
    ui->actionDetect->setDisabled(true);
    ui->actionOpen->setDisabled(true);
    ui->actionSave->setDisabled(true);
@@ -2176,6 +2275,7 @@ void MainWindow::doNotDisturb()
 
 void MainWindow::doNotDisturbCancel()
 {
+   findChild<QAction *>("actionUpdateChipDatabase")->setEnabled(true);
    if ((currentChipType == 0) || (currentChipType == 5) || (currentChipType == 6)) ui->actionDetect->setDisabled(false);
    ui->actionOpen->setDisabled(false);
    ui->actionSave->setDisabled(false);
@@ -3458,7 +3558,7 @@ void MainWindow::applyPlatformRestrictions()
     ui->actionCH347F_safe->setChecked(current_programmer == PROG_CH347F_SAFE);
     SetItemStatus("comboBox_type", 1, true); // I2C is not included in this Windows port.
     SetItemStatus("comboBox_type", 2, true); // MicroWire is not included.
-    setWindowTitle(tr("IMSProg ECC/OOB v4 - CH341A/B + CH347T/F Windows SPI"));
+    setWindowTitle(tr("IMSProg 1.9.2 - CH341A/B + CH347T/F Windows SPI"));
 #endif
 }
 

@@ -45,6 +45,7 @@ jobs:
           cmake -S . -B build-linux -G Ninja -DFORCE_QT5=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build build-linux --parallel 2
           sh tests/ui_run_tests.sh build-linux
+          sh tests/run_database_updater_tests.sh build-linux
 
   windows-build:
     runs-on: windows-latest
@@ -85,6 +86,10 @@ jobs:
           test -x "$windeployqt"
           "$windeployqt" --release --no-translations \
             "$(cygpath -w "$PWD/dist-windows/IMSProg.exe")"
+          "$windeployqt" --release --no-translations \
+            "$(cygpath -w "$PWD/dist-windows/IMSProg_database_update.exe")"
+          "$windeployqt" --release --no-translations \
+            "$(cygpath -w "$PWD/dist-windows/IMSProg_editor.exe")"
 
           for runtime in libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll; do
             test -f "$MINGW_PREFIX/bin/$runtime"
@@ -192,8 +197,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $required = @(
-            'IMSProg.exe', 'IMSProg.Dat', 'libusb-1.0.dll', 'libusbK.dll',
-            'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
+            'IMSProg.exe', 'IMSProg_database_update.exe', 'IMSProg_editor.exe',
+            'IMSProg.Dat', 'libusb-1.0.dll', 'libusbK.dll',
+            'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'Qt6Network.dll',
+            'tls/qschannelbackend.dll',
             'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll',
             'platforms/qwindows.dll', 'README.txt', 'WINDOWS_CH347.md',
             'LICENSES/IMSProg-GPL.txt',
@@ -216,14 +223,16 @@ jobs:
             throw 'libusbK.dll is not an x64 PE binary'
           }
 
-          $process = Start-Process -FilePath (Resolve-Path dist-windows/IMSProg.exe) `
-            -WorkingDirectory (Resolve-Path dist-windows) -PassThru
-          Start-Sleep -Seconds 5
-          if ($process.HasExited) {
-            throw "IMSProg.exe exited during smoke start with code $($process.ExitCode)"
+          foreach ($executable in @('IMSProg.exe', 'IMSProg_database_update.exe', 'IMSProg_editor.exe')) {
+            $process = Start-Process -FilePath (Resolve-Path "dist-windows/$executable") `
+              -WorkingDirectory (Resolve-Path dist-windows) -PassThru
+            Start-Sleep -Seconds 5
+            if ($process.HasExited) {
+              throw "$executable exited during smoke start with code $($process.ExitCode)"
+            }
+            Stop-Process -Id $process.Id -Force
+            Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
           }
-          Stop-Process -Id $process.Id -Force
-          Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
 
       - name: Archive portable bundle
         shell: pwsh
@@ -273,3 +282,28 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-regressions, windows-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: IMSProg-Windows-x64-${{ github.sha }}
+          path: release-assets
+      - name: Publish verified Windows portable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum --check ./*.sha256
+          cd ..
+          gh release create "$GITHUB_REF_NAME" --verify-tag \
+            --title "IMSProg $GITHUB_REF_NAME — Windows x64" \
+            --notes-file "docs/RELEASE_${GITHUB_REF_NAME#v}.md" \
+            release-assets/*.zip release-assets/*.sha256

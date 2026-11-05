@@ -75,5 +75,9 @@ The new database contains %2 chips.</source>
         <source>Error:</source>
         <translation>错误：</translation>
     </message>
+    <message>
+        <source>Downloaded file is not a valid IMSProg chip database. The existing database was preserved.</source>
+        <translation>下载的文件不是有效的 IMSProg 芯片数据库。原有数据库已保留。</translation>
+    </message>
 </context>
 </TS>

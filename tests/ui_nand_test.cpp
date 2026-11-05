@@ -204,6 +204,26 @@ int main(int argc, char **argv) {
     MainWindow w;
     w.timer->stop();
     check(w.hexEdit != nullptr && w.uiReady, "constructor completes with initialized editor and selectors");
+    QAction *updateDatabase = w.findChild<QAction *>("actionUpdateChipDatabase");
+    check(updateDatabase && updateDatabase->isEnabled(), "database updater menu available at startup");
+    w.doNotDisturb();
+    check(!updateDatabase->isEnabled(), "database updater locked during chip I/O");
+    w.doNotDisturbCancel();
+    check(updateDatabase->isEnabled(), "database updater restored after chip I/O");
+    w.resize(950, 631);
+    w.show();
+    app.processEvents();
+    QScrollArea *parameterScroll = w.findChild<QScrollArea *>("parameterScroll");
+    check(parameterScroll != nullptr, "chip configuration has a scrollable container");
+    for (const char *name : {"pushButton", "pushButton_2", "pushButton_3"}) {
+        QWidget *button = w.findChild<QWidget *>(name);
+        check(button && button->isVisible() &&
+              w.rect().contains(QRect(button->mapTo(&w, QPoint()), button->size())),
+              "read, detect and run remain reachable at the default window size");
+        check(!parameterScroll->isAncestorOf(button), "operation controls remain outside the scrolling parameters");
+    }
+    w.hide();
+
     check(combo(w, "comboBox_raw")->count() == 2, "exactly two image layouts");
     check(combo(w, "comboBox_onDieEcc")->count() == 2, "exactly two independent ECC choices");
 
