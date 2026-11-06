@@ -25,20 +25,33 @@
 
 ## Windows 增强功能
 
-Windows x64 版本支持 CH341A/B、CH347T 和 CH347F 的 SPI 操作，保留 libusb／libusbK 路径及可选的 WCH 官方后端源码。Windows 下暂不支持 FT232H、I2C 和 MicroWire，独立数据库编辑器与更新器也不参与 Windows 构建。只连接所选类型的一台编程器；设备唯一性检查仅覆盖后端能够枚举到的设备。
+Windows x64 版本支持 CH341A/B、CH347T 和 CH347F 的 SPI 操作，界面保持原版 IMSProg 风格。Windows 下不支持 FT232H、I2C 和 MicroWire。只连接所选类型的一台编程器。
 
-SPI NAND 的转储布局和片内 ECC 独立选择，相关控件只在 SPI NAND 模式显示：
+### 编程器与速度
+
+“编程器”菜单按型号分为 CH341A/B、CH347T、CH347F 三项，二级菜单选择 SPI 时钟：
+
+- CH341A/B：时钟由芯片固定（约 1.5 MHz），不可调。
+- CH347T／CH347F：自动（按芯片类型）、60、30、15、7.5、3.75、1.875 MHz。SPI NOR 使用普通读命令，最高限制在 30 MHz；EEPROM 不超过各自默认速度。长线、在板读写或带电平转换时选低速。
+
+### 驱动
+
+程序包的 `driver\` 目录附带沁恒（WCH）官方、带微软签名的 CH341/CH347 驱动包（ch341wdm.inf 2.6.2025.4，覆盖 CH341A/B、CH347T、CH347F 的 SPI/I2C 接口）。在“编程器 > 驱动程序...”或点击状态栏的驱动状态即可安装（需要管理员授权）。状态栏显示驱动是否已安装及版本。CH347 的串口（COM）驱动不受影响。已经改用 WinUSB/libusbK 的设备仍可通过自带的 libusb 使用。
+
+### SPI NAND：布局与片内 ECC
+
+转储布局和片内 ECC 独立选择，相关控件只在 SPI NAND 模式显示：
 
 | 布局 | 片内 ECC | Read／Verify | Write |
 | :--- | :--- | :--- | :--- |
-| 主数据 | 开 | 支持，读取经芯片纠错的主数据 | 支持 |
-| 主数据 | 关 | 支持，读取原始主数据 | 支持 |
-| 主数据 + OOB | 开 | 支持，主数据已纠错，不能称为原始转储 | 不支持此格式组合 |
-| 主数据 + OOB | 关 | 支持，按每页主数据后跟 OOB 保存 | 支持原始镜像写回 |
+| 主数据 | 开 | 读取经芯片纠错的主数据 | 支持 |
+| 主数据 | 关 | 读取原始主数据 | 支持（会先确认：OOB 中不会生成 ECC） |
+| 主数据 + OOB | 开 | 主数据已纠错，不是原始转储 | 不支持 |
+| 主数据 + OOB | 关 | 每页主数据后跟 OOB 的原始镜像 | 支持原始镜像写回 |
 
-`Read`、`Verify` 和 `Auto` 按所选 ECC 配置操作，并回读 B0 寄存器确认。校验不会强制打开 ECC，避免原始数据在 ECC 关闭时写入、却在 ECC 打开时校验而误报。写入和校验要求缓冲区长度与所选布局完全匹配，未完成的读取不能直接用于写入。
+切换布局时 ECC 会自动设为常用值（主数据 + OOB → 关，仅主数据 → 开），之后可手动修改。ECC 开启时，无法纠正的页**不会中断**读取、校验或查空：该页按原样读出，结束后汇总报告涉及的块。如果大部分页都无法纠正，通常说明数据由主控用自己的 ECC 写入（片内 ECC 被关闭），应改用 ECC 关读取。ECC 状态解码覆盖 Winbond、Micron 及通用规则（GigaDevice、Macronix、Kioxia、XTX、Foresee 等）。
 
-W25N01GW 识别为 `EF BA 21`，使用每页 2048 字节主数据与 64 字节 OOB：主数据镜像为 128 MiB，含 OOB 的镜像为 132 MiB。芯片需要 **1.8 V 供电与信号电平转换**。本分支没有新增软件 BCH/QPIC ECC、OOB 重排或镜像修复能力。操作步骤与格式要求见 [ECC/OOB 中文说明](docs/ECC_OOB_zh_CN.md)。
+1.8 V 芯片（如 W25N01GW）需要 **1.8 V 供电与信号电平转换**，软件电压选项不能替代硬件。详见 [ECC/OOB 中文说明](docs/ECC_OOB_zh_CN.md)。
 
 ### Windows 构建
 
@@ -50,13 +63,11 @@ cmake --build build-windows --parallel
 cmake --install build-windows --prefix dist-windows
 ```
 
-使用其他 Qt 套件时，替换 `CMAKE_PREFIX_PATH`。程序与 `IMSProg.Dat` 放在同一目录。Qt 部署、USB 后端和连接诊断的详细说明见 [Windows 构建与连接指南](docs/WINDOWS_CH347.md)。仓库仅发布源码、构建资料、必要的依赖对应源码及许可证，没有附带 EXE、WCH DLL 或驱动；WCH 二进制的公共再分发许可与 GPL 兼容性仍未核实。
+使用其他 Qt 套件时，替换 `CMAKE_PREFIX_PATH`。程序与 `IMSProg.Dat` 放在同一目录。Qt 部署、USB 后端和连接诊断的详细说明见 [Windows 构建与连接指南](docs/WINDOWS_CH347.md)。`cmake --install` 会把 `third_party/wch_driver` 中的签名驱动包复制到 `driver\\`；程序运行时按需加载 WCH DLL，不与其链接。
 
 ### 测试与验证范围
 
-本机已使用 MinGW GCC 16.2.0 和 Qt 6.11.2 完成 Windows x64 Release 构建，CH341 异步 560 案例、USB 描述符选择测试及 19 项 Windows UI 源码检查通过。完整硬件无关回归的运行方式见 [tests/README.md](tests/README.md)，Qt 集成覆盖见 [tests/ui_README.md](tests/ui_README.md)。依赖 Unix 头文件与 ELF 链接行为的测试需在 GNU/Linux 运行，不能将 MinGW 无法运行的测试记为通过。
-
-[本分支 CI](https://github.com/FlyFish-go/IMSProg/actions/workflows/windows-regression.yml) 执行 Windows 构建、Linux 协议与后端回归、ASan/UBSan 和原生 Qt 界面测试。实际状态以对应提交的 Actions 结果为准。模拟测试、源码检查和成功构建均不代表真实 Windows 驱动、USB 时序、芯片 ECC 行为或电气连接已通过；目前没有完成实机验证。
+硬件无关回归（NAND 模拟 SPI、CH341/CH347 后端、ASan/UBSan、原生 Qt 主窗口集成测试）的运行方式见 [tests/README.md](tests/README.md) 和 [tests/ui_README.md](tests/ui_README.md)，[本分支 CI](https://github.com/FlyFish-go/IMSProg/actions/workflows/windows-regression.yml) 会自动执行。1.9.3 已在 Windows 11 上用 CH341B（WCH 驱动，读 SPI NOR ID）和 CH347F（WCH 驱动，SPI 初始化）实机验证连接；SPI NAND 的读写请先做多次只读比对。
 
 ## 项目简介
 

@@ -15,6 +15,7 @@ objects=$(find "$appbuild" -path '*/CMakeFiles/IMSProg.dir/*' -name '*.o' ! -nam
 wraps=""
 for symbol in ProgDeviceInit ProgDeviceClose getDeviceDescriptor snor_read_devid snor_read_param nand_read_devid nand_configure_ecc \
     nand_set_ecc_status_mode nand_reset_ecc_read_status nand_get_ecc_read_status nand_unprotect \
+    nand_get_ecc_corrected_pages nand_get_ecc_uncorrectable_pages nand_get_ecc_uncorrectable_page_list \
     nand_checkBadBlock nand_block_read nand_page_read nand_block_write nand_block_erase \
     nand_ECCEnable nand_ECCDisable; do
     wraps="$wraps -Wl,--wrap=$symbol"

@@ -93,6 +93,10 @@ int main(int argc, char *argv[])
     #endif
     qDebug() << "Used Qt version:" << QT_VERSION_STR;
     QApplication a(argc, argv);
+    if (a.arguments().contains(QStringLiteral("--portable-smoke-test"))) {
+        QStandardPaths::setTestModeEnabled(true);
+        a.setProperty("app/portableSmokeTest", true);
+    }
     initPaths();
 
     MainWindow w;

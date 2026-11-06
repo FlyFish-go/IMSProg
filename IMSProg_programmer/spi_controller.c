@@ -143,6 +143,26 @@ int getDeviceDescriptor(u8 *data, u8 deviceType)
     return 0;
 }
 
+static u16 spiClockOverride = 0; /* kHz, 0 = per-chip automatic */
+
+void setSpiClockOverride(u16 khz) { spiClockOverride = khz; }
+u16 getSpiClockOverride(void) { return spiClockOverride; }
+
+/* Apply a user-selected fixed CH347 SPI clock. SPI NOR uses plain READ
+ * (0x03), so it never exceeds 30 MHz; EEPROMs never exceed their own
+ * defaults; NAND uses the selected clock. I2C/MicroWire are unaffected. */
+static u16 applySpiClockOverride(u8 deviceType, u8 chipType, u16 automatic)
+{
+    const int ch347 = deviceType == 2 || deviceType == 3 || PROG_IS_CH347F(deviceType);
+    if (!spiClockOverride || !ch347) return automatic;
+    switch (chipType) {
+    case 0: return spiClockOverride > 30000 ? 30000 : spiClockOverride;
+    case 6: return spiClockOverride;
+    case 3: case 4: case 5: return spiClockOverride < automatic ? spiClockOverride : automatic;
+    default: return automatic;
+    }
+}
+
 uint16_t getInterfaceSpeed(u8 deviceType, u8 chipType, u16 delay)
 {
     u16 interfaceSpeed = 400;
@@ -162,8 +182,11 @@ uint16_t getInterfaceSpeed(u8 deviceType, u8 chipType, u16 delay)
         { 7500,   400,  1600,  1875,  1875,  1875,  7500}  // CH347F low speed  (NOR/NAND 7.5 MHz, EEPROM 1.875 MHz)
     };
     if (deviceType > 7 || chipType > 6) return 1600;
-    if ((delay > 40) && (delay < 2100)) interfaceSpeed = defaultSpeed[deviceType][chipType] * delay / 1000;
-    else interfaceSpeed = defaultSpeed[deviceType][chipType];
+    {
+        const u16 base = applySpiClockOverride(deviceType, chipType, defaultSpeed[deviceType][chipType]);
+        if ((delay > 40) && (delay < 2100)) interfaceSpeed = (u16)((uint32_t)base * delay / 1000);
+        else interfaceSpeed = base;
+    }
     if ((interfaceSpeed) < 20) interfaceSpeed = 20;
     if ((interfaceSpeed) > 60000) interfaceSpeed = 60000;
     return interfaceSpeed;

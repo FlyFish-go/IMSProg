@@ -92,6 +92,8 @@ int main(int argc, char *argv[])
         QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs); 
     #endif
     QApplication a(argc, argv);
+    if (a.arguments().contains(QStringLiteral("--portable-smoke-test")))
+        QStandardPaths::setTestModeEnabled(true);
     qDebug() << "Used Qt version:" << QT_VERSION_STR;
     initPaths();
 

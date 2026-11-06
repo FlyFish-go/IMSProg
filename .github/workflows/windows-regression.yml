@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Portable dependency resolver regressions
+        run: python3 tests/test_windows_bundle.py
       - name: Install native build dependencies
         run: |
           sudo apt-get update
@@ -55,6 +57,9 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -192,7 +197,41 @@ jobs:
           Hardware validation: not performed
           "@ | Set-Content -Encoding utf8NoBOM dist-windows/BUILD-INFO.txt
 
-      - name: Verify portable bundle and smoke-start
+      - name: Collect transitive Windows runtime dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtime = Join-Path $env:RUNNER_TEMP 'msys64/ucrt64/bin'
+          python scripts/windows_bundle.py dist-windows `
+            --runtime-dir $runtime --objdump (Join-Path $runtime 'objdump.exe') `
+            --system-dir (Join-Path $env:SystemRoot 'System32')
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime dependency collection failed' }
+
+      - name: Include notices for shipped MSYS2 runtime packages
+        run: |
+          set -euo pipefail
+          runtime_sources=()
+          for runtime in dist-windows/*.dll; do
+            name=$(basename "$runtime")
+            # These two runtimes have their own pinned source/notices, not the
+            # version (if any) installed in the build machine's MSYS2 prefix.
+            case "$name" in libusb-1.0.dll|libusbK.dll) continue ;; esac
+            source="$MINGW_PREFIX/bin/$name"
+            [ -f "$source" ] && runtime_sources+=("$source")
+          done
+          [ "${#runtime_sources[@]}" -gt 0 ]
+          owners=$(pacman -Qqo "${runtime_sources[@]}" | sort -u)
+          mapfile -t packages <<< "$owners"
+          pacman -Q "${packages[@]}" > dist-windows/RUNTIME-PACKAGES.txt
+          license_dirs=$(pacman -Ql "${packages[@]}" |
+            awk '$2 ~ /\/share\/licenses\/[^/]+\/$/ {print $2}' | sort -u)
+          mkdir -p dist-windows/LICENSES/MSYS2
+          while IFS= read -r license; do
+            [ -d "$license" ] || continue
+            cp -r "$license" dist-windows/LICENSES/MSYS2/
+          done <<< "$license_dirs"
+
+      - name: Verify portable bundle files
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -221,17 +260,6 @@ jobs:
           $peText = $peInfo -join "`n"
           if ($LASTEXITCODE -ne 0 -or $peText -notmatch 'architecture: i386:x86-64') {
             throw 'libusbK.dll is not an x64 PE binary'
-          }
-
-          foreach ($executable in @('IMSProg.exe', 'IMSProg_database_update.exe', 'IMSProg_editor.exe')) {
-            $process = Start-Process -FilePath (Resolve-Path "dist-windows/$executable") `
-              -WorkingDirectory (Resolve-Path dist-windows) -PassThru
-            Start-Sleep -Seconds 5
-            if ($process.HasExited) {
-              throw "$executable exited during smoke start with code $($process.ExitCode)"
-            }
-            Stop-Process -Id $process.Id -Force
-            Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
           }
 
       - name: Archive portable bundle
@@ -271,6 +299,25 @@ jobs:
           - Source: $env:GITHUB_SHA
           - Hardware validation: not performed
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+      - name: Verify extracted release with isolated runtime environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archives = @(Get-ChildItem artifacts/*.zip)
+          if ($archives.Count -ne 1) { throw 'Expected one portable archive' }
+          $extracted = Join-Path $env:RUNNER_TEMP ("imsprog-portable-" + [guid]::NewGuid())
+          try {
+            Expand-Archive $archives[0].FullName -DestinationPath $extracted
+            $objdump = Join-Path $env:RUNNER_TEMP 'msys64/ucrt64/bin/objdump.exe'
+            # No runtime search directory: the extracted ZIP must be complete.
+            python scripts/windows_bundle.py $extracted --objdump $objdump `
+              --system-dir (Join-Path $env:SystemRoot 'System32')
+            if ($LASTEXITCODE -ne 0) { throw 'Archived runtime dependency verification failed' }
+            & ./scripts/windows_smoke.ps1 -Bundle $extracted
+          } finally {
+            Remove-Item -Recurse -Force $extracted -ErrorAction SilentlyContinue
+          }
 
       - name: Upload Windows x64 portable artifact
         uses: actions/upload-artifact@v4

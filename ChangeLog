@@ -1,3 +1,13 @@
+- Ver. 1.9.3 - Restored the original IMSProg main-window look. SPI NAND with
+on-die ECC on: uncorrectable pages no longer abort Read/Verify/Erase check; they
+are read as-is and reported per block afterwards. ECC status decoding for all
+vendors (Winbond, Micron, generic), real pages-per-block erase addressing, ECC
+default follows the dump layout, confirmation before writing main data with ECC
+off. Windows: WCH vendor DLLs load from System32 or the bundled driver folder,
+CH347F is recognised with WCH driver 2.6.2025.x. Programmer menu reorganised into
+CH341A/B, CH347T and CH347F with fixed SPI clock submenus (FT232H removed). The
+signed WCH driver package is bundled and can be installed from Programmer >
+Driver; the status bar shows the driver state.
 - Ver. 1.9.2 - Refreshed main-window layout with scrollable chip settings and
 persistent operation controls, clearer independent NAND ECC/OOB tooltips,
 updated Simplified Chinese text and fixed-width editor font. Included the

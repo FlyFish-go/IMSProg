@@ -1,0 +1,2 @@
+# Signed driver package: never convert line endings (catalog hashes)
+third_party/wch_driver/* -text -diff

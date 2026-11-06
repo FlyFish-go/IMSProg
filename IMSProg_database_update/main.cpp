@@ -79,6 +79,8 @@ int main(int argc, char *argv[])
     qDebug() << "Runtime version:" << QSslSocket::sslLibraryVersionString();
 
     QApplication a(argc, argv);
+    if (a.arguments().contains(QStringLiteral("--portable-smoke-test")))
+        QStandardPaths::setTestModeEnabled(true);
     QCoreApplication::setApplicationName("imsprog");
     QFont font("Monospace");
     font.setStyleHint(QFont::TypeWriter);

@@ -197,11 +197,13 @@ static void test_configuration(void)
             }
         }
     }
-    /* A failed target bit and a changed preserved bit both fail verification. */
+    /* Only the target bits (ECC-E, and BUF when requested) must verify;
+     * other bits may read back differently on some devices. */
     for (unsigned int bit = 1; bit <= 0x80; bit <<= 1) {
         reset_fake();
         fake.mismatch_mask = (u8)bit;
-        CHECK(nand_configure_ecc(2, 1, 1, &actual) == NAND_ERROR_CONFIG_VERIFY);
+        CHECK(nand_configure_ecc(2, 1, 1, &actual) ==
+              ((bit & 0x18) ? NAND_ERROR_CONFIG_VERIFY : 0));
         CHECK(actual == (u8)(0x18 ^ bit));
         check_clean_bus();
     }
@@ -241,19 +243,25 @@ static void test_reads_and_status(void)
                 memset(data, 0x55, sizeof(data));
                 fake.page_status = (u8)(status << 4);
                 int ret = nand_block_read(data + 1, size, 3, 2, 2);
-                CHECK(ret == (enabled && status >= 2 ? NAND_ERROR_ECC_UNCORRECTABLE : 0));
+                /* Uncorrectable pages are recorded but never abort a read. */
+                CHECK(ret == 0);
                 CHECK(fake.feature_writes == 0); /* Read never toggles ECC. */
                 CHECK(data[0] == 0x55 && data[size * 2 + 1] == 0x55);
-                if (ret == 0) {
-                    CHECK(fake.data_reads == 2 && fake.last_read_size == size);
-                    CHECK(fake.last_page == 7 && fake.last_column == 0);
-                    CHECK(data[1] == 6 && data[size + 1] == 7);
-                } else {
-                    CHECK(fake.data_reads == 0 && data[1] == 0x55);
-                }
+                CHECK(fake.data_reads == 2 && fake.last_read_size == size);
+                CHECK(fake.last_page == 7 && fake.last_column == 0);
+                CHECK(data[1] == 6 && data[size + 1] == 7);
                 unsigned int flags = !enabled || !status ? NAND_ECC_READ_CLEAN :
                     status == 1 ? NAND_ECC_READ_CORRECTED : NAND_ECC_READ_UNCORRECTABLE;
                 CHECK(nand_get_ecc_read_status() == flags);
+                CHECK(nand_get_ecc_uncorrectable_pages() ==
+                      (flags == NAND_ECC_READ_UNCORRECTABLE ? 2u : 0u));
+                CHECK(nand_get_ecc_corrected_pages() ==
+                      (flags == NAND_ECC_READ_CORRECTED ? 2u : 0u));
+                if (flags == NAND_ECC_READ_UNCORRECTABLE) {
+                    u32 pages[4] = {0};
+                    CHECK(nand_get_ecc_uncorrectable_page_list(pages, 4) == 2);
+                    CHECK(pages[0] == 6 && pages[1] == 7);
+                }
                 check_clean_bus();
             }
         }
@@ -271,11 +279,45 @@ static void test_reads_and_status(void)
     CHECK(nand_block_read(data, 2048, 1, 1, 2) == 0);
     CHECK(nand_get_ecc_read_status() == NAND_ECC_READ_CORRECTED);
     fake.page_status = 0x20;
-    CHECK(nand_page_read(data, 2048, 0) == NAND_ERROR_ECC_UNCORRECTABLE);
+    CHECK(nand_page_read(data, 2048, 0) == 0);
     CHECK(nand_get_ecc_read_status() == (NAND_ECC_READ_CORRECTED | NAND_ECC_READ_UNCORRECTABLE));
     nand_reset_ecc_read_status();
     CHECK(nand_get_ecc_read_status() == NAND_ECC_READ_CLEAN);
     check_clean_bus();
+}
+
+static void test_vendor_decoding(void)
+{
+    /* Winbond: SR[5:4] 00/01/10/11. */
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_WINBOND, 0x00) == NAND_ECC_READ_CLEAN);
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_WINBOND, 0x10) == NAND_ECC_READ_CORRECTED);
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_WINBOND, 0x20) == NAND_ECC_READ_UNCORRECTABLE);
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_WINBOND, 0x30) == NAND_ECC_READ_UNCORRECTABLE);
+    /* Micron: SR[6:4], 010 uncorrectable, 001/011/101 corrected. */
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_MICRON, 0x00) == NAND_ECC_READ_CLEAN);
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_MICRON, 0x10) == NAND_ECC_READ_CORRECTED);
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_MICRON, 0x20) == NAND_ECC_READ_UNCORRECTABLE);
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_MICRON, 0x30) == NAND_ECC_READ_CORRECTED);
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_MICRON, 0x50) == NAND_ECC_READ_CORRECTED);
+    /* Generic (GigaDevice/Macronix/Kioxia...): 10 uncorrectable, 11 corrected. */
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_GENERIC, 0x20) == NAND_ECC_READ_UNCORRECTABLE);
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_GENERIC, 0x30) == NAND_ECC_READ_CORRECTED);
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_GENERIC, 0x0c) == NAND_ECC_READ_CLEAN);
+    /* Busy/WEL/fail bits never affect decoding. */
+    CHECK(nand_decode_ecc_status(NAND_ECC_STATUS_WINBOND, 0x0f) == NAND_ECC_READ_CLEAN);
+    CHECK(nand_ecc_status_mode_for_id(0xef) == NAND_ECC_STATUS_WINBOND);
+    CHECK(nand_ecc_status_mode_for_id(0x2c) == NAND_ECC_STATUS_MICRON);
+    CHECK(nand_ecc_status_mode_for_id(0xc8) == NAND_ECC_STATUS_GENERIC);
+    CHECK(nand_ecc_status_mode_for_id(0xff) == NAND_ECC_STATUS_NONE);
+    /* Generic mode decodes during a real page read. */
+    {
+        u8 data[2048];
+        prepare_ecc(1, NAND_ECC_STATUS_GENERIC);
+        fake.page_status = 0x20;
+        CHECK(nand_page_read(data, 2048, 5) == 0);
+        CHECK(nand_get_ecc_uncorrectable_pages() == 1);
+        check_clean_bus();
+    }
 }
 
 static void test_read_transport(void)
@@ -354,17 +396,17 @@ static void test_writes_and_erases(void)
     fake.expected_programmer = 3;
     fake.feature[0xa0] = 0xff;
     fake.busy_after_operation = 2;
-    CHECK(nand_block_erase(17, 131072, 3) == 0);
+    CHECK(nand_block_erase(17, 64, 3) == 0);
     CHECK(fake.feature[0xa0] == 0x83 && fake.last_page == 17 * 64);
     CHECK(fake.erases == 1 && fake.busy_reads == 0);
     check_clean_bus();
     reset_fake();
     fake.erase_status = 0x04;
-    CHECK(nand_block_erase(0, 131072, 2) == NAND_ERROR_ERASE_FAIL);
+    CHECK(nand_block_erase(0, 64, 2) == NAND_ERROR_ERASE_FAIL);
     check_clean_bus();
     reset_fake();
     fake.feature[0xa0] = 0x7c;
-    CHECK(nand_block_erase(0, 131072, 2) == 0);
+    CHECK(nand_block_erase(0, 64, 2) == 0);
     count = fake.step;
     for (code = 0; code < 2; ++code) {
         for (at = 1; at <= count; ++at) {
@@ -372,7 +414,7 @@ static void test_writes_and_erases(void)
             fake.feature[0xa0] = 0x7c;
             fake.fail_at = at;
             fake.fail_code = code ? 3 : -5;
-            CHECK(nand_block_erase(0, 131072, 2) == (code ? NAND_ERROR_TRANSPORT : -5));
+            CHECK(nand_block_erase(0, 64, 2) == (code ? NAND_ERROR_TRANSPORT : -5));
             check_clean_bus();
         }
     }
@@ -393,7 +435,7 @@ static void test_unprotect_and_invalid_arguments(void)
     CHECK(nand_page_read(data, 2048, 0x1000000) == NAND_ERROR_INVALID_ARGUMENT);
     CHECK(nand_block_read(data, 2048, 0, 0, 2) == NAND_ERROR_INVALID_ARGUMENT);
     CHECK(nand_block_write(data, 2048, 0xffffff, 64, 2) == NAND_ERROR_INVALID_ARGUMENT);
-    CHECK(nand_block_erase(0x1000000, 131072, 2) == NAND_ERROR_INVALID_ARGUMENT);
+    CHECK(nand_block_erase(0x1000000, 64, 2) == NAND_ERROR_INVALID_ARGUMENT);
     CHECK(nand_read_devid(NULL, 3, 2) == NAND_ERROR_INVALID_ARGUMENT);
     CHECK(nand_checkBadBlock(0, 65536, 64, 2) == -1);
     CHECK(fake.step == 0);
@@ -433,6 +475,7 @@ int main(void)
     test_configuration();
     test_configuration_transport();
     test_reads_and_status();
+    test_vendor_decoding();
     test_read_transport();
     test_identification();
     test_writes_and_erases();

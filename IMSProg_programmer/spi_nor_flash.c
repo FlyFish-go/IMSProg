@@ -977,6 +977,9 @@ static int nand_ecc_configuration_valid = 0;
 static int nand_ecc_enabled = 0;
 static u8 nand_ecc_programmer;
 static unsigned int nand_ecc_read_status = NAND_ECC_READ_CLEAN;
+static unsigned int nand_ecc_corrected_pages = 0;
+static unsigned int nand_ecc_uncorrectable_pages = 0;
+static u32 nand_ecc_bad_page_list[NAND_ECC_MAX_RECORDED_PAGES];
 
 static int nand_transfer(u8 *command, u32 command_size, u8 *tx, u32 tx_size,
                          u8 *rx, u32 rx_size)
@@ -1050,12 +1053,29 @@ int nand_wait_ready(int sleep_ms)
     return nand_wait_ready_status(sleep_ms, NULL);
 }
 
+int nand_ecc_status_mode_for_id(u8 manufacturer_id)
+{
+    switch (manufacturer_id) {
+    case 0xef: return NAND_ECC_STATUS_WINBOND;
+    case 0x2c: return NAND_ECC_STATUS_MICRON;
+    case 0x00:
+    case 0xff: return NAND_ECC_STATUS_NONE;
+    default:   return NAND_ECC_STATUS_GENERIC;
+    }
+}
+
 void nand_set_ecc_status_mode(int mode)
 {
-    /* Device identification belongs to the caller. Do not apply this vendor's
-     * ECC encoding to other NANDs, which can have different status layouts. */
-    nand_ecc_status_mode = mode == NAND_ECC_STATUS_W25N01GW
-                         ? mode : NAND_ECC_STATUS_NONE;
+    /* Device identification belongs to the caller. */
+    switch (mode) {
+    case NAND_ECC_STATUS_WINBOND:
+    case NAND_ECC_STATUS_MICRON:
+    case NAND_ECC_STATUS_GENERIC:
+        nand_ecc_status_mode = mode;
+        break;
+    default:
+        nand_ecc_status_mode = NAND_ECC_STATUS_NONE;
+    }
     nand_ecc_configuration_valid = 0;
     nand_reset_ecc_read_status();
 }
@@ -1063,6 +1083,63 @@ void nand_set_ecc_status_mode(int mode)
 void nand_reset_ecc_read_status(void)
 {
     nand_ecc_read_status = NAND_ECC_READ_CLEAN;
+    nand_ecc_corrected_pages = 0;
+    nand_ecc_uncorrectable_pages = 0;
+}
+
+unsigned int nand_get_ecc_corrected_pages(void)
+{
+    return nand_ecc_corrected_pages;
+}
+
+unsigned int nand_get_ecc_uncorrectable_pages(void)
+{
+    return nand_ecc_uncorrectable_pages;
+}
+
+unsigned int nand_get_ecc_uncorrectable_page_list(u32 *pages, unsigned int max)
+{
+    unsigned int n = nand_ecc_uncorrectable_pages < NAND_ECC_MAX_RECORDED_PAGES
+                   ? nand_ecc_uncorrectable_pages : NAND_ECC_MAX_RECORDED_PAGES;
+    unsigned int i;
+    if (n > max) n = max;
+    for (i = 0; pages && i < n; ++i) pages[i] = nand_ecc_bad_page_list[i];
+    return n;
+}
+
+/* Decode the ECC status bits of the C0 status register.
+ * Returns NAND_ECC_READ_CLEAN / _CORRECTED / _UNCORRECTABLE. */
+unsigned int nand_decode_ecc_status(int mode, u8 sr)
+{
+    switch (mode) {
+    case NAND_ECC_STATUS_WINBOND:
+        /* W25N datasheets: ECC-1/ECC-0 = SR3[5:4]. 00 clean, 01 corrected,
+         * 10 uncorrectable (page), 11 uncorrectable (continuous read). */
+        switch (sr & 0x30) {
+        case 0x00: return NAND_ECC_READ_CLEAN;
+        case 0x10: return NAND_ECC_READ_CORRECTED;
+        default:   return NAND_ECC_READ_UNCORRECTABLE;
+        }
+    case NAND_ECC_STATUS_MICRON:
+        /* MT29F SPI NAND: ECCSTATUS = SR[6:4]. 000 clean, 010 uncorrectable,
+         * 001/011/101 corrected (different bit counts). */
+        switch (sr & 0x70) {
+        case 0x00: return NAND_ECC_READ_CLEAN;
+        case 0x20: return NAND_ECC_READ_UNCORRECTABLE;
+        default:   return NAND_ECC_READ_CORRECTED;
+        }
+    case NAND_ECC_STATUS_GENERIC:
+        /* GigaDevice, Macronix, Kioxia, XTX, Foresee, Dosilicon, ESMT...:
+         * SR[5:4] == 10 is uncorrectable on all of them; 01/11 mean
+         * corrected (with different bit-count meanings). */
+        switch (sr & 0x30) {
+        case 0x00: return NAND_ECC_READ_CLEAN;
+        case 0x20: return NAND_ECC_READ_UNCORRECTABLE;
+        default:   return NAND_ECC_READ_CORRECTED;
+        }
+    default:
+        return NAND_ECC_READ_CLEAN;
+    }
 }
 
 unsigned int nand_get_ecc_read_status(void)
@@ -1093,8 +1170,12 @@ int nand_configure_ecc(u8 progType, int enable, int require_buffer_mode, u8 *rea
     ret = nand_read_feature(0xb0, &after);
     if (ret) return ret;
     if (readback) *readback = after;
-    /* Check the entire register, including every preserved non-target bit. */
-    if (after != desired) return NAND_ERROR_CONFIG_VERIFY;
+    /* Only the bits this function changes must read back as written; some
+     * devices report reserved or read-only bits differently. */
+    {
+        u8 mask = NAND_CFG_ECC_ENABLE | (require_buffer_mode ? NAND_CFG_BUFFER_MODE : 0);
+        if ((after & mask) != (desired & mask)) return NAND_ERROR_CONFIG_VERIFY;
+    }
     nand_ecc_enabled = (after & NAND_CFG_ECC_ENABLE) != 0;
     nand_ecc_programmer = progType;
     nand_ecc_configuration_valid = 1;
@@ -1115,18 +1196,20 @@ int nand_page_read(unsigned char *buf, unsigned int page_size, uint32_t sector_n
     if (ret) return ret;
     ret = nand_wait_ready_status(100, &sr);
     if (ret) return ret;
-    if (nand_ecc_status_mode == NAND_ECC_STATUS_W25N01GW &&
+    if (nand_ecc_status_mode != NAND_ECC_STATUS_NONE &&
         nand_ecc_configuration_valid && nand_ecc_programmer == programmerType &&
         nand_ecc_enabled) {
-        /* W25N01GW datasheet, sections 7.3.2 and 8.2.14: in BUF mode
-         * 00 = clean, 01 = corrected, 10 = uncorrectable. Treat unexpected
-         * 11 conservatively as uncorrectable too, never as clean data. */
-        if ((sr & 0x30) >= 0x20) {
-            nand_ecc_read_status |= NAND_ECC_READ_UNCORRECTABLE;
-            return NAND_ERROR_ECC_UNCORRECTABLE;
+        /* An uncorrectable page is recorded, but its (uncorrected) contents
+         * are still read out so a whole-chip dump never stops on one page. */
+        unsigned int ecc = nand_decode_ecc_status(nand_ecc_status_mode, sr);
+        nand_ecc_read_status |= ecc;
+        if (ecc == NAND_ECC_READ_UNCORRECTABLE) {
+            if (nand_ecc_uncorrectable_pages < NAND_ECC_MAX_RECORDED_PAGES)
+                nand_ecc_bad_page_list[nand_ecc_uncorrectable_pages] = sector_number;
+            ++nand_ecc_uncorrectable_pages;
+        } else if (ecc == NAND_ECC_READ_CORRECTED) {
+            ++nand_ecc_corrected_pages;
         }
-        if ((sr & 0x30) == 0x10)
-            nand_ecc_read_status |= NAND_ECC_READ_CORRECTED;
     }
     command[0] = 0x03;
     command[1] = command[2] = command[3] = 0;
@@ -1169,13 +1252,17 @@ int nand_unprotect(u8 progType)
     return after == desired ? 0 : NAND_ERROR_CONFIG_VERIFY;
 }
 
-int nand_block_erase(unsigned int sector_number, unsigned int blockSize, u8 progType)
+/* sector_number is the erase-block number; pages_per_block converts it to
+ * the row (page) address sent with BLOCK ERASE (0 means the common 64). */
+int nand_block_erase(unsigned int sector_number, unsigned int pages_per_block, u8 progType)
 {
     u8 command[4], sr;
+    uint64_t row;
     int ret;
-    (void)blockSize; /* Existing NAND geometry uses 64 pages per erase block. */
     programmerType = progType;
-    if (sector_number > (0xffffffu >> 6)) return NAND_ERROR_INVALID_ARGUMENT;
+    if (!pages_per_block) pages_per_block = 64;
+    row = (uint64_t)sector_number * pages_per_block;
+    if (row > 0xffffffu) return NAND_ERROR_INVALID_ARGUMENT;
     ret = nand_wait_ready(3000);
     if (ret) return ret;
     ret = nand_unprotect(progType);
@@ -1183,11 +1270,10 @@ int nand_block_erase(unsigned int sector_number, unsigned int blockSize, u8 prog
     /* SET FEATURE can clear WEL on some devices; set it after unprotect. */
     ret = nand_write_enable_checked();
     if (ret) return ret;
-    sector_number <<= 6;
     command[0] = 0xd8;
-    command[1] = (u8)(sector_number >> 16);
-    command[2] = (u8)(sector_number >> 8);
-    command[3] = (u8)sector_number;
+    command[1] = (u8)(row >> 16);
+    command[2] = (u8)(row >> 8);
+    command[3] = (u8)row;
     ret = nand_transfer(command, sizeof(command), NULL, 0, NULL, 0);
     if (ret) return ret;
     ret = nand_wait_ready_status(3000, &sr);

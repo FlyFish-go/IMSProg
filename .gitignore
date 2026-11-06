@@ -34,6 +34,7 @@
 
 # Executables
 *.exe
+__pycache__/
 *.out
 *.app
 *.i*86
@@ -209,3 +210,6 @@ IMSProg_programmer/IMSProg
 *.dll
 *.DLL
 *.exe
+
+# Signed WCH driver package shipped in the Windows bundle
+!third_party/wch_driver/*

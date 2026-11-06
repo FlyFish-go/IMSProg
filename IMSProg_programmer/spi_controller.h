@@ -69,6 +69,9 @@ typedef enum{
 int ProgDeviceInit( u8 deviceType, u8 chipType, u16 speed );
 int ProgDeviceClose( u8 deviceType );
 int getDeviceDescriptor(u8 *data, u8 deviceType);
+/* Fixed CH347 SPI clock in kHz chosen in the Programmer menu; 0 = automatic. */
+void setSpiClockOverride(uint16_t khz);
+uint16_t getSpiClockOverride(void);
 uint16_t getInterfaceSpeed(u8 deviceType, u8 chipType, u16 delay);
 uint16_t getAuxiliaryInterfaceSpeed(u8 deviceType, u8 chipType, u16 maximumSpeed);
 

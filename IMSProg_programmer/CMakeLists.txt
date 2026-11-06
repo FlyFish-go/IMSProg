@@ -176,6 +176,7 @@ add_executable(${PROJECT_NAME}
     qhexedit2/src/qhexedit.cpp
     main.cpp
     mainwindow.cpp
+    driverinstaller.cpp
     dialogbbm.cpp
     dialogsp.cpp
     dialogrp.cpp
@@ -254,6 +255,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 if(WIN32)
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         IMSPROG_WINDOWS_CH347_ONLY WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0602)
+    target_link_libraries(${PROJECT_NAME} PRIVATE shell32)
     set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE TRUE)
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -266,6 +268,8 @@ endif()
 if(WIN32)
     install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION .)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/database/IMSProg.Dat" ${QM_FILES} DESTINATION .)
+    # Signed WCH CH341/CH347 driver package, installed from Programmer > Driver.
+    install(DIRECTORY "${PROJECT_ROOT}/third_party/wch_driver/" DESTINATION driver)
 else()
 install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/img/IMSProg64.png" DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/pixmaps")

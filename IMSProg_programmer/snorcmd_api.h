@@ -49,7 +49,11 @@ int at45_read_sr(u8 *val);
 #define NAND_ERROR_INVALID_ARGUMENT (-1006)
 #define NAND_ERROR_TRANSPORT (-1007)
 #define NAND_ECC_STATUS_NONE 0
-#define NAND_ECC_STATUS_W25N01GW 1
+#define NAND_ECC_STATUS_WINBOND 1   /* SR[5:4], 1x = uncorrectable; needs BUF=1 */
+#define NAND_ECC_STATUS_W25N01GW NAND_ECC_STATUS_WINBOND
+#define NAND_ECC_STATUS_MICRON 2    /* SR[6:4], 010 = uncorrectable */
+#define NAND_ECC_STATUS_GENERIC 3   /* SR[5:4], 10 = uncorrectable */
+#define NAND_ECC_MAX_RECORDED_PAGES 4096u
 #define NAND_ECC_READ_CLEAN 0u
 #define NAND_ECC_READ_CORRECTED 1u
 #define NAND_ECC_READ_UNCORRECTABLE 2u
@@ -57,9 +61,18 @@ int at45_read_sr(u8 *val);
  * ECC configuration; call nand_configure_ecc afterwards for each operation.
  * These APIs share the existing single-programmer global state; not thread-safe. */
 void nand_set_ecc_status_mode(int mode);
-/* Reset before a whole read/verify, not between blocks. Get returns ORed flags. */
+/* Pick the ECC status decoding for a JEDEC manufacturer ID. */
+int nand_ecc_status_mode_for_id(u8 manufacturer_id);
+unsigned int nand_decode_ecc_status(int mode, u8 status_register);
+/* Reset before a whole read/verify, not between blocks. Get returns ORed flags.
+ * With on-die ECC enabled, nand_page_read never fails on an uncorrectable
+ * page: it reads the page anyway and records it here. */
 void nand_reset_ecc_read_status(void);
 unsigned int nand_get_ecc_read_status(void);
+unsigned int nand_get_ecc_corrected_pages(void);
+unsigned int nand_get_ecc_uncorrectable_pages(void);
+/* Copies up to max recorded page numbers (first NAND_ECC_MAX_RECORDED_PAGES). */
+unsigned int nand_get_ecc_uncorrectable_page_list(u32 *pages, unsigned int max);
 /* Change B0 bit 4 only; if required for a known Winbond device also set BUF bit 3.
  * Preserve and verify all other bits. readback may be NULL; on mismatch it holds
  * the actual B0 value. Never call this implicitly from a read or verify helper. */
@@ -68,7 +81,7 @@ int nand_page_read(unsigned char *buf, unsigned int sector_size, u32 sector_numb
 int nand_block_read(unsigned char *buf, unsigned int page_size, u32 block_number, unsigned int pages_per_block, u8 progType);
 int nand_wait_ready(int sleep_ms);
 int nand_read_devid(u8 *rxbuf, int n_rx, u8 progType);
-int nand_block_erase(unsigned int sector_number, unsigned int blockSize, u8 progType);
+int nand_block_erase(unsigned int block_number, unsigned int pages_per_block, u8 progType);
 void nand_write_enable(void);
 int nand_unprotect(u8 progType);
 int nand_page_write(unsigned char *buf, unsigned int page_size, u32 sector_number);

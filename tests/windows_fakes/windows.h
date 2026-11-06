@@ -11,6 +11,7 @@
 #define LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR 0x00000100
 #define LOAD_LIBRARY_SEARCH_SYSTEM32 0x00000800
 #define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)
+#define INVALID_FILE_ATTRIBUTES ((DWORD)-1)
 typedef uint8_t UCHAR;
 typedef char CHAR;
 typedef uint16_t USHORT;
@@ -25,6 +26,7 @@ DWORD GetModuleFileNameW(HMODULE, WCHAR *, DWORD);
 DWORD GetLastError(void);
 void SetLastError(DWORD);
 HMODULE LoadLibraryExW(const WCHAR *, HANDLE, DWORD);
+DWORD GetFileAttributesW(const WCHAR *);
 FARPROC GetProcAddress(HMODULE, const char *);
 BOOL FreeLibrary(HMODULE);
 #endif

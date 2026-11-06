@@ -1,8 +1,8 @@
 # Windows x64 SPI build
 
-Experimental SPI support for CH341A/B, CH347T and CH347F. FT232H, I2C and MicroWire remain
-disabled on Windows. This repository provides source and hardware-free tests;
-it does not include an EXE, Qt runtime, WCH DLL or driver.
+SPI support for CH341A/B, CH347T and CH347F. FT232H, I2C and MicroWire are
+disabled on Windows. `cmake --install` also copies the signed WCH driver package
+from `third_party/wch_driver` to `driver\` (see its README.txt).
 
 ## Build
 
@@ -39,35 +39,28 @@ build excludes the separate database editor and updater.
 
 ## Connection and first use
 
-- Select CH341A/B, CH347T or CH347F explicitly in the Programmer menu. Only one device
-  of the selected family may be attached. CH341 SPI IDs are `1A86:5512` and
-  `4348:5512`; CH347T mode 1 is `1A86:55DB`; CH347F is `1A86:55DE` (SPI/I2C on
-  interface 4). USB IDs do not distinguish A/B silicon. CH347T and CH347F are
-  selected separately and never used as a fallback for each other. With the WCH
-  DLL backend, CH347F must report `ChipMode=4`.
-- The backend first tries libusb with the existing driver. It does not install,
-  replace, detach or reset drivers. Do not change a working driver just to try
-  this build, and do not copy DLLs into System32.
+- Select CH341A/B, CH347T or CH347F in the Programmer menu and pick an SPI
+  clock in its submenu. The CH341 SPI clock is fixed by the chip. CH347 clocks
+  are 60 MHz / 2^n; SPI NOR is capped at 30 MHz and EEPROMs at their defaults.
+  Only one device of the selected family may be attached. CH341 SPI IDs are
+  `1A86:5512` and `4348:5512`; CH347T mode 1 is `1A86:55DB`; CH347F is
+  `1A86:55DE` (SPI/I2C on interface 4).
+- Driver: Programmer > Driver... (or the driver item in the status bar) shows
+  whether the WCH driver is installed and installs the bundled package with
+  `pnputil /add-driver ch341wdm.inf /install` after a UAC prompt. CH347 serial
+  (COM) drivers are not changed.
+- Backends: libusb (WinUSB/libusbK-bound devices) is tried first, then the WCH
+  vendor DLL (CH341DLLA64/CH347DLLA64), loaded from the program folder, its
+  `driver\` folder or System32. CH347F is matched by PID `55DE` and interface
+  `MI_04` with FuncType 1 or 3; WCH driver 2.6.2025.x reports ChipMode 0 for it.
 - Use Programmer > Programmer connection diagnostics if connection fails.
-  This action inspects USB metadata without sending SPI/flash commands.
-  Ordinary startup polling can initialize GPIO/CS, so first check the programmer
-  with no flash chip attached.
-- W25N01GW requires 1.8 V power **and signal-level conversion**. Check wiring and
-  board power, then start with repeated reads and matching backups. See
-  [the NAND guide](ECC_OOB_zh_CN.md) before considering writes or erases.
+  It inspects USB metadata without sending SPI/flash commands.
+- 1.8 V chips such as W25N01GW need 1.8 V power **and signal-level conversion**.
+  Start with repeated reads and matching backups. See
+  [the NAND guide](ECC_OOB_zh_CN.md) before writing or erasing.
 
-## Optional WCH backend and limits
-
-The source retains a family-specific WCH DLL fallback after successful device
-enumeration and before SPI I/O. Device counts only cover devices exposed by
-libusb and the selected vendor API; a successful enumeration can omit devices
-whose driver initialization failed, so it is not a complete Windows PnP
-inventory. Keep only one programmer of the selected family connected. WCH binaries are not supplied. Their official
-download is [CH341PAR](https://www.wch-ic.com/downloads/CH341PAR_ZIP.html);
-[WCH's terms](https://www.wch-ic.com/statement.html) do not establish a clear
-unrestricted redistribution grant. Separate downloading or runtime loading does
-not itself resolve compatibility with the application's GPL obligations.
+## Validation
 
 The included tests simulate transports and exercise the native Qt interface.
-They do not establish Windows startup, real driver compatibility, electrical
-safety, chip correctness or throughput. No physical hardware validation is claimed.
+Version 1.9.3 was additionally checked on Windows 11 with a CH341B (WCH
+driver, SPI NOR JEDEC read) and a CH347F (WCH driver, SPI initialisation).

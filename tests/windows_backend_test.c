@@ -12,6 +12,7 @@ struct libusb_device { int index; };
 struct libusb_device_handle { int index; };
 struct fake_state {
     int missing_wch, missing_usbk, missing_libusb, missing_ch341;
+    int vendor_in_system32, system32_loads, vendor_in_driver_dir, driver_dir_loads;
     int wch341_present[16], wch341_opens, wch341_closes, wch341_loads;
     int wch341_timeouts, wch341_reads, wch341_writes, wch341_exchanges;
     int wch341_actual, wch341_io_result, wch341_descriptor_length;
@@ -22,7 +23,7 @@ struct fake_state {
     int async_calls, async_result;
     const char *missing_export;
     int wch_present[32], wch_bad_info[32];
-    int wch_wrong_mode, wch_ch347f, wch_timeout_result, wch_io_result, wch_actual;
+    int wch_wrong_mode, wch_ch347f, wch_driver_2025, wch_uart_iface, wch_timeout_result, wch_io_result, wch_actual;
     int wch_loads, wch_opens, wch_closes, wch_timeouts, wch_reads, wch_writes;
     int usb_loads, usbk_loads, frees;
     int usb_count, usb_init_result, usb_list_result, usb_open_result, usb_claim_result, usb_alt_result;
@@ -91,11 +92,27 @@ DWORD GetModuleFileNameW(HMODULE module, WCHAR *out, DWORD capacity)
 }
 DWORD GetLastError(void) { return f.last_error; }
 void SetLastError(DWORD error) { f.last_error = error; }
+/* Vendor DLLs live beside the EXE unless vendor_in_system32 is set. */
+DWORD GetFileAttributesW(const WCHAR *path)
+{
+    assert(wcsncmp(path, L"C:\\test\\", 8) == 0);
+    assert(wcsstr(path, L"CH34")); /* only vendor DLLs are probed */
+    if (f.vendor_in_system32) return INVALID_FILE_ATTRIBUTES;
+    if (f.vendor_in_driver_dir) return wcsstr(path, L"\\driver\\") ? 0x20 : INVALID_FILE_ATTRIBUTES;
+    return wcsstr(path, L"\\driver\\") ? INVALID_FILE_ATTRIBUTES : 0x20;
+}
 HMODULE LoadLibraryExW(const WCHAR *path, HANDLE reserved, DWORD flags)
 {
     assert(!reserved);
-    assert(flags == (LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32));
-    assert(wcsncmp(path, L"C:\\test\\", 8) == 0);
+    if (flags == LOAD_LIBRARY_SEARCH_SYSTEM32) {
+        /* Bare vendor DLL name, System32 only; never libusb from System32. */
+        assert(f.vendor_in_system32 && !wcschr(path, L'\\') && wcsstr(path, L"CH34"));
+        ++f.system32_loads;
+    } else {
+        assert(flags == (LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32));
+        assert(wcsncmp(path, L"C:\\test\\", 8) == 0);
+        if (wcsstr(path, L"C:\\test\\driver\\")) { assert(f.vendor_in_driver_dir); ++f.driver_dir_loads; }
+    }
     f.last_error = 126;
     if (wcsstr(path, L"CH341DLLA64.DLL")) { ++f.wch341_loads; return f.missing_ch341 ? NULL : (HMODULE)(uintptr_t)4; }
     if (wcsstr(path, L"CH347DLLA64.DLL")) { ++f.wch_loads; return f.missing_wch ? NULL : (HMODULE)(uintptr_t)1; }
@@ -116,8 +133,16 @@ static BOOL fake_wch_info(ULONG index, wch_device_info *info)
 {
     if (f.wch_bad_info[index]) return FALSE;
     memset(info, 0, sizeof(*info));
-    strcpy(info->DeviceID, f.wch_ch347f ? "USB\\VID_1A86&PID_55DE&MI_04" : "USB\\VID_1A86&PID_55DB");
-    info->FuncType = 1; info->ChipMode = f.wch_wrong_mode ? 3 : (f.wch_ch347f ? 4 : 1);
+    strcpy(info->DeviceID, f.wch_ch347f ? (f.wch_uart_iface ? "USB\\VID_1A86&PID_55DE&MI_00" : "USB\\VID_1A86&PID_55DE&MI_04")
+                                        : "USB\\VID_1A86&PID_55DB");
+    /* wrong_mode: a UART function (FuncType 0) is never an SPI target. */
+    info->FuncType = f.wch_wrong_mode ? 0 : 1; info->ChipMode = f.wch_ch347f ? 4 : 1;
+    if (f.wch_driver_2025) {
+        /* Observed with WCH CH341PAR 2.6.2025.4 on a real CH347F:
+         * "USB\VID_1A86&PID_55DE&MI_04#...", FuncType=3, ChipMode=0. */
+        strcat(info->DeviceID, "#7&3AE7B81D&0&0004#");
+        info->FuncType = 3; info->ChipMode = 0;
+    }
     info->CH347IfNum = 7; info->DataDnEndp = 0x06; info->DataUpEndp = 0x86;
     return TRUE;
 }
@@ -265,6 +290,20 @@ int main(void)
     CHECK(f.wch_writes == 2 && f.usb_loads == 1); /* Never retry/switch after a command. */
     ch347_windows_close(&p); CHECK(!p.windows_backend && f.wch_closes == 1);
 
+    /* Vendor DLL installed only in System32 by the WCH driver package. */
+    reset(); f.vendor_in_system32 = 1; f.usb_count = 1; f.usb_open_result = LIBUSB_ERROR_NOT_FOUND; f.wch_present[0] = 1;
+    CHECK(ch347_windows_open(&p) == 0);
+    CHECK(f.system32_loads == 1 && f.wch_loads == 1);
+    CHECK(strstr(ch347_windows_last_report(), "from System32") != NULL);
+    ch347_windows_close(&p);
+    reset(); f.vendor_in_system32 = 1; f.missing_wch = 1; f.usb_count = 1; f.usb_open_result = LIBUSB_ERROR_NOT_FOUND;
+    CHECK(ch347_windows_open(&p) != 0);
+    CHECK(strstr(ch347_windows_last_error(), "Install the driver") != NULL);
+    /* Bundled driver package folder (driver\\) beside the EXE. */
+    reset(); f.vendor_in_driver_dir = 1; f.usb_count = 1; f.usb_open_result = LIBUSB_ERROR_NOT_FOUND; f.wch_present[0] = 1;
+    CHECK(ch347_windows_open(&p) == 0 && f.driver_dir_loads == 1 && f.system32_loads == 0);
+    ch347_windows_close(&p);
+
     reset(); f.usb_count = 1; f.usb_open_result = LIBUSB_ERROR_ACCESS; f.wch_present[31] = 1;
     CHECK(ch347_windows_open(&p) == 0 && f.wch_opens == 32);
     ch347_windows_close(&p);
@@ -340,6 +379,11 @@ int main(void)
     reset(); f.wch_present[0] = 1; f.wch_ch347f = 1;
     CHECK(ch347_windows_open(&p) == 0 && f.wch_timeouts == 1);
     ch347_windows_close(&p);
+    reset(); f.wch_present[0] = 1; f.wch_ch347f = 1; f.wch_driver_2025 = 1;
+    CHECK(ch347_windows_open(&p) == 0 && f.wch_timeouts == 1);
+    ch347_windows_close(&p);
+    reset(); f.wch_present[0] = 1; f.wch_ch347f = 1; f.wch_uart_iface = 1; /* UART interface */
+    CHECK(ch347_windows_open(&p) != 0 && f.wch_timeouts == 0);
     reset(); f.wch_present[0] = 1; /* WCH reports CH347T mode 1 */
     CHECK(ch347_windows_open(&p) != 0 && f.wch_timeouts == 0 &&
           strstr(ch347_windows_last_error(), "no matching CH347F") != NULL);
@@ -460,6 +504,12 @@ int main(void)
         CHECK(ch341_windows_diagnose() == 0);
         CHECK(f.usb_claim_calls == 0 && f.usb_bulk_calls == 0 && f.async_calls == 0 && f.wch341_loads == 0);
     }
+
+    /* CH341 vendor DLL installed only in System32 by the WCH driver package. */
+    reset(); f.vendor_in_system32 = 1; f.usb_count = 1; make_ch341(0, 0x1a86);
+    f.usb_open_result = LIBUSB_ERROR_NOT_FOUND; f.wch341_present[0] = 1;
+    CHECK(ch341_windows_open(&p) == 0 && f.system32_loads == 1 && f.wch341_loads == 1);
+    ch347_windows_close(&p);
 
     /* CH341 vendor selection, descriptor rejection, and exact rounded replies. */
     reset(); f.usb_count = 1; make_ch341(0, 0x1a86); f.usb_open_result = LIBUSB_ERROR_ACCESS; f.wch341_present[15] = 1;

@@ -1,5 +1,26 @@
 # Hardware-free regression tests
 
+## Windows portable packaging
+
+`python3 tests/test_windows_bundle.py` checks recursive dependency collection,
+plugin imports, case-insensitive names, missing transitive imports, architecture
+validation, and rejection of dependencies available only through developer PATH.
+
+Windows CI runs `scripts/windows_bundle.py` after Qt deployment to collect the
+complete DLL closure from the same UCRT64 toolchain used to build the apps. It
+includes notices and package versions for the shipped MSYS2 DLLs. After archiving,
+CI extracts the ZIP into a fresh temporary directory and runs the resolver again
+without a toolchain search directory. Every bundled EXE/DLL must be x64 and its
+non-system imports must resolve inside the extracted package.
+
+`scripts/windows_smoke.ps1 -Bundle <extracted-directory>` then starts all three
+apps with only the bundle and Windows directories in child PATH and no inherited
+Qt plugin configuration. It requires a responsive window, bundled Qt Widgets,
+and the bundled Windows platform plugin; a live loader error dialog cannot pass.
+It passes `--portable-smoke-test`, which selects Qt test storage paths and skips
+the programmer's initial hardware probe and automatic probe timer. It does not click controls,
+update a database, or validate programmer/chip operations.
+
 Run from the repository root:
 
 ```sh

@@ -41,6 +41,7 @@
 #include "dialogbbm.h"
 #include "dialogfill.h"
 #include "hexutility.h"
+#include "driverinstaller.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <QSignalBlocker>
@@ -49,8 +50,9 @@
 #include <QVBoxLayout>
 #include <QDialogButtonBox>
 #include <QClipboard>
-#include <QScrollArea>
+#include <vector>
 #include <QFormLayout>
+#include <QHBoxLayout>
 #ifdef _WIN32
 #include "windows/ch347_win32.h"
 #endif
@@ -66,13 +68,13 @@ MainWindow::MainWindow(QWidget *parent) :
  max_rec = 0;
  isHalted = false;
  lastDirectory = QDir::homePath(); //"/home/";
- grnKeyStyle = "QPushButton { color: white; background: #2563eb; border: 1px solid #1d4ed8; border-radius: 6px; padding: 5px 12px; font-weight: 600; } QPushButton:hover { background: #1d4ed8; } QPushButton:pressed { background: #1e40af; } QPushButton:disabled { color: palette(mid); background: palette(button); border-color: palette(mid); } QPushButton:focus { border: 2px solid palette(highlight); }";
- redKeyStyle = "QPushButton { color: white; background: #b45309; border: 1px solid #92400e; border-radius: 6px; padding: 5px 12px; font-weight: 600; }";
- for (QPushButton *button : {ui->pushButton, ui->pushButton_2, ui->pushButton_3, ui->pushButton_4})
-     button->setStyleSheet(grnKeyStyle);
+ grnKeyStyle = "QPushButton{color:#fff;background-color: rgb(120, 183, 140);border-radius: 20px;border: 2px solid #094065;border-radius:8px;font-weight:600;}QPushButton::pressed{background-color: rgb(115, 210, 22);}";
+ redKeyStyle = "QPushButton{color:#fff;background-color:#f66;border-radius: 20px;border: 2px solid #094065;border-radius:8px;font-weight:600;}";
  timer = new QTimer();
  connect(timer, SIGNAL(timeout()), this, SLOT(slotTimerAlarm()));
- timer->start(2000); //10000
+ // Bundle startup verification must not probe attached programmers.
+ if (!qApp->property("app/portableSmokeTest").toBool())
+     timer->start(2000); //10000
 
  ui->actionSetProgrammerType->setExclusive(true);
  ui->statusMessage->setText("");
@@ -84,6 +86,7 @@ MainWindow::MainWindow(QWidget *parent) :
  ui->statusBar->addPermanentWidget(ui->jedecEdit,0);
  ui->statusBar->addPermanentWidget(ui->cLabel,0);
  ui->statusBar->addPermanentWidget(ui->crcEdit,0);
+ setupProgrammerMenu();
  ui->progressBar->setStyle(QStyleFactory::create("Fusion"));
  ui->progressBar->setValue(0);
  ui->comboBox_name->addItems({""});
@@ -184,6 +187,17 @@ MainWindow::MainWindow(QWidget *parent) :
           }
        if (current_programmer == 4) ui->actionFT232H_v1_2->setChecked(true);
        if (current_programmer > PROG_CH347F_SAFE) current_programmer = 0;
+       // Menu v2: one entry per programmer family plus a fixed SPI clock.
+       // Map the earlier board/preset entries to the equivalent clock.
+       if (settings.contains("SpiClockKHz"))
+           spiClockChoice = static_cast<uint16_t>(settings.value("SpiClockKHz").toUInt());
+       else if (current_programmer == 3) spiClockChoice = 15000;            // CH347T v1.1
+       else if (current_programmer == PROG_CH347F_FAST) spiClockChoice = 60000;
+       else if (current_programmer == PROG_CH347F_SAFE) spiClockChoice = 7500;
+       if (current_programmer == 1 || current_programmer == 4) current_programmer = 0; // FT232H removed
+       if (current_programmer == 3) current_programmer = 2;
+       if (current_programmer == PROG_CH347F_FAST || current_programmer == PROG_CH347F_SAFE)
+           current_programmer = PROG_CH347F_STD;
        if (PROG_IS_CH347F(current_programmer))
           {
               ui->actionCH347F->setChecked(current_programmer == PROG_CH347F_STD);
@@ -200,15 +214,19 @@ MainWindow::MainWindow(QWidget *parent) :
      settings.endGroup();
  }
  applyPlatformRestrictions();
+ if (programmerFamily() == FamilyCH341) spiClockChoice = 0;
+ setSpiClockOverride(spiClockChoice);
  // connect and status check
- if (current_programmer < 2) ui->lStatus->setText("CH341A/B");
- if ((current_programmer == 2) || (current_programmer == 3)) ui->lStatus->setText("CH347T");
- if (current_programmer == 4) ui->lStatus->setText("FT232H");
- if (PROG_IS_CH347F(current_programmer)) ui->lStatus->setText("CH347F");
- statusCH341 = ProgDeviceInit(current_programmer, currentChipType,
-     currentChipType == 1 ? currentI2CBusSpeed : getInterfaceSpeed(current_programmer, currentChipType, currentDelay));
+ updateProgrammerMenu();
+ refreshDriverStatus();
+ statusCH341 = -1;
+ if (!qApp->property("app/portableSmokeTest").toBool())
+ {
+     statusCH341 = ProgDeviceInit(current_programmer, currentChipType,
+         currentChipType == 1 ? currentI2CBusSpeed : getInterfaceSpeed(current_programmer, currentChipType, currentDelay));
+     ProgDeviceClose(current_programmer);
+ }
  ch341StatusFlashing();
- ProgDeviceClose(current_programmer);
  QFont heFont;
  heFont = QFont("Monospace", 10);
  heFont.setStyleHint(QFont::TypeWriter);
@@ -239,74 +257,12 @@ MainWindow::MainWindow(QWidget *parent) :
 
 void MainWindow::setupAppearance()
 {
-    setWindowTitle(tr("IMSProg 1.9.2 — SPI / I2C / MicroWire Programmer"));
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    ui->horizontalLayout_3->setContentsMargins(12, 12, 12, 12);
-    ui->horizontalLayout_3->setSpacing(14);
-
-    // Keep the editor usable on small screens and when display scaling grows.
-    ui->horizontalLayout_3->removeItem(ui->verticalLayout_5);
-    QWidget *parameters = new QWidget(this);
-    parameters->setLayout(ui->verticalLayout_5);
-    ui->verticalLayout_5->setContentsMargins(0, 0, 8, 0);
-    ui->verticalLayout_5->setSpacing(14);
-    parameters->setMinimumWidth(350);
-    parameters->setMaximumWidth(430);
-    ui->verticalLayout_5->removeWidget(ui->groupBox);
-    QScrollArea *parameterScroll = new QScrollArea(parameters);
-    parameterScroll->setObjectName("parameterScroll");
-    parameterScroll->setFrameShape(QFrame::NoFrame);
-    parameterScroll->setWidgetResizable(true);
-    parameterScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    parameterScroll->setWidget(ui->groupBox);
-    ui->verticalLayout_5->insertWidget(0, parameterScroll, 1);
-
-    // Read/detect and the operation sequence remain reachable while scrolling.
-    ui->formLayout->removeWidget(ui->pushButton_2);
-    ui->horizontalLayout->removeWidget(ui->pushButton);
-    QHBoxLayout *readActions = new QHBoxLayout;
-    readActions->addWidget(ui->pushButton_2);
-    readActions->addWidget(ui->pushButton);
-    ui->formLayout->removeWidget(ui->label_nandInfo);
-    ui->verticalLayout_5->insertWidget(1, ui->label_nandInfo);
-    ui->verticalLayout_5->insertLayout(2, readActions);
-    ui->horizontalLayout_3->insertWidget(0, parameters);
-    ui->horizontalLayout_3->setStretch(0, 0);
-    ui->horizontalLayout_3->setStretch(1, 1);
-
-    const QString panelStyle = "QGroupBox { font-weight: 600; border: 1px solid palette(mid); border-radius: 8px; margin-top: 10px; padding: 12px 8px 8px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }";
-    for (QGroupBox *group : {ui->groupBox, ui->groupBox_2})
-    {
-        group->setMaximumWidth(QWIDGETSIZE_MAX);
-        group->setStyleSheet(panelStyle);
-    }
-    ui->formLayout->setVerticalSpacing(5);
-    ui->formLayout->setHorizontalSpacing(10);
-    ui->formLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    for (QComboBox *combo : ui->groupBox->findChildren<QComboBox *>())
-    {
-        combo->setMinimumHeight(28);
-        combo->setMaximumHeight(QWIDGETSIZE_MAX);
-        combo->setMaximumWidth(QWIDGETSIZE_MAX);
-        combo->setMinimumContentsLength(12);
-        QFont font = combo->font();
-        font.setBold(false);
-        combo->setFont(font);
-        combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    }
-    ui->groupBox->setTitle(tr("Chip configuration"));
-    ui->groupBox_2->setTitle(tr("Operation sequence"));
-    ui->pushButton_3->setText(tr("Run"));
-    ui->pushButton_3->setToolTip(tr("Run the checked operations in order: erase, blank check, program, verify."));
-    ui->comboBox_ECC->setToolTip(tr("Spare bytes per physical page. This is the OOB size, not the ECC correction strength."));
-    ui->comboBox_raw->setToolTip(tr("Choose the image layout independently of on-die ECC. Main + OOB includes each page's spare bytes."));
-    ui->comboBox_onDieEcc->setToolTip(tr("On: the chip checks/corrects page data and may report uncorrectable ECC. Off: read without chip correction; returned data may contain bit errors. Applied and read back when an operation starts."));
-    ui->comboBox_vcc->setToolTip(tr("Chip voltage from the database. Selecting this value does not set the programmer's supply or signal voltage."));
-    ui->label_nandInfo->setMinimumWidth(0);
-    ui->label_nandInfo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
-    ui->label_nandInfo->setStyleSheet("QLabel { background: palette(alternate-base); border: 1px solid palette(mid); border-radius: 6px; padding: 8px; }");
-    ui->mainToolBar->setIconSize(QSize(24, 24));
-    ui->progressBar->setMinimumHeight(20);
+    // Keep the original IMSProg layout and colours; only add NAND tooltips
+    // and the chip database updater entry.
+    ui->comboBox_ECC->setToolTip(tr("Spare (OOB) bytes per page."));
+    ui->comboBox_raw->setToolTip(tr("Image layout: main data only, or main data followed by each page's OOB."));
+    ui->comboBox_onDieEcc->setToolTip(tr("On: the chip corrects bit errors; pages it cannot correct are still read and reported.\nOff: raw read. Use Off for chips written by a host controller with its own ECC (on-die ECC disabled)."));
+    ui->label_nandInfo->setWordWrap(true);
     ui->eStatus->setMaximumWidth(QWIDGETSIZE_MAX);
     ui->eStatus->setMinimumWidth(ui->eStatus->fontMetrics().boundingRect(tr("Not connected")).width() + 24);
     QAction *updateDatabase = new QAction(tr("Update chip database…"), this);
@@ -339,6 +295,7 @@ void MainWindow::on_pushButton_clicked()
   //Reading data from chip
   newFileName = ui->comboBox_name->currentText();
   int res = 0;
+  bool readCompleted = false;
   uint32_t numBlocks, step, sectorsPerBlock;
   defaultSpeed = getInterfaceSpeed(current_programmer, currentChipType, currentDelay);
 
@@ -487,8 +444,6 @@ void MainWindow::on_pushButton_clicked()
                {
                    hexEdit->setData(chipData);
                    ui->label_nandInfo->setText(tr("Read failed at block %1 (error %2). Buffer is incomplete; unread bytes are FF.").arg(curBlock).arg(res));
-                   if (res == NAND_ERROR_ECC_UNCORRECTABLE)
-                       ui->label_nandInfo->setText(ui->label_nandInfo->text() + " " + tr("On-die ECC reported an uncorrectable page."));
                    qWarning().noquote() << ui->label_nandInfo->text();
                }
                QMessageBox::about(this, tr("Error"), tr("Error reading block ") + QString::number(curBlock));
@@ -529,7 +484,7 @@ void MainWindow::on_pushButton_clicked()
     }
     hexEdit->setData(chipData);
     nandReadIncomplete = false;
-    finishNandRead(tr("Read complete"));
+    readCompleted = true;
     ui->statusMessage->setText("");
     ui->progressBar->setValue(0);
     ui->pushButton->setStyleSheet(grnKeyStyle);
@@ -545,6 +500,7 @@ void MainWindow::on_pushButton_clicked()
   doNotDisturbCancel();
   filled = 0;
   numberOfReads++;
+  if (readCompleted) finishNandRead(tr("Read complete"));
 }
 
 void MainWindow::on_pushButton_2_clicked()
@@ -1092,7 +1048,7 @@ void MainWindow::on_actionErase_triggered()
 
                if (retval == 0) //skip bad sectors, if checkbox enable
                {
-                   ret = nand_block_erase( curBlock,  currentBlockSize, current_programmer);
+                   ret = nand_block_erase(curBlock, currentBlockSize / currentPageSize, current_programmer);
                    if (ret != 0)
                      {
                        QMessageBox::about(this, tr("Error"), tr("Error erasing sector ") + QString::number(curBlock));
@@ -1240,6 +1196,7 @@ void MainWindow::on_actionWrite_triggered()
 {
     lastOperationSucceeded = false;
     if (!validateNandOperation(true, true)) return;
+    if (!nandWriteModeConfirmed && !confirmNandWriteMode()) return;
     //Writting data to chip
     int res = 0, badResult = 0;
     uint32_t numBlocks, step, sectorsPerBlock;
@@ -1709,8 +1666,6 @@ void MainWindow::on_actionVerify_triggered()
                         if (currentChipType == 6)
                         {
                             ui->label_nandInfo->setText(tr("NAND operation failed at block/page %1 (error %2).").arg(curBlock).arg(res));
-                            if (res == NAND_ERROR_ECC_UNCORRECTABLE)
-                                ui->label_nandInfo->setText(ui->label_nandInfo->text() + " " + tr("On-die ECC reported an uncorrectable page."));
                         }
                         QMessageBox::about(this, tr("Error"), tr("Error reading block ") + QString::number(curBlock));
                         ProgDeviceClose(current_programmer);
@@ -1782,6 +1737,9 @@ void MainWindow::on_pushButton_3_clicked()
     const bool write = ui->checkBox_2->isChecked();
     const bool verify = ui->checkBox_3->isChecked();
     if (!validateNandOperation(write, write || verify)) return;
+    // Ask before the sequence starts, not after the chip has been erased.
+    if (write && !confirmNandWriteMode()) return;
+    nandWriteModeConfirmed = write;
     ui->pushButton_3->setStyleSheet(redKeyStyle);
     const auto run = [this](bool selected, void (MainWindow::*action)()) {
         if (!selected) return true;
@@ -1792,6 +1750,7 @@ void MainWindow::on_pushButton_3_clicked()
         run(blankCheck, &MainWindow::on_actionCheck_erase_triggered) &&
         run(write, &MainWindow::on_actionWrite_triggered))
         run(verify, &MainWindow::on_actionVerify_triggered);
+    nandWriteModeConfirmed = false;
     ui->pushButton_3->setStyleSheet(grnKeyStyle);
 }
 
@@ -1913,12 +1872,12 @@ void MainWindow::ch341StatusFlashing()
     if (statusCH341 == 0)
     {
         ui->eStatus->setText(tr("Connected"));
-        ui->eStatus -> setStyleSheet("QLineEdit {border: 1px solid #15803d;border-radius: 4px;color:#fff;background:#15803d;font-weight:600;padding:2px 6px;}");
+        ui->eStatus -> setStyleSheet("QLineEdit {border: 2px solid gray;border-radius: 5px;color:#000;background:#9f0;font-weight:600;border-style:inset;}");
     }
     else
     {
         ui->eStatus->setText(tr("Not connected"));
-        ui->eStatus -> setStyleSheet("QLineEdit {border: 1px solid #64748b;border-radius: 4px;color:#fff;background:#64748b;font-weight:600;padding:2px 6px;}");
+        ui->eStatus -> setStyleSheet("QLineEdit {border: 2px solid gray;border-radius: 5px;color:#fff;background:#f00;font-weight:600;border-style:inset;}");
     }
 }
 
@@ -2203,6 +2162,9 @@ void MainWindow::on_actionEdit_chips_Database_triggered()
 void MainWindow::doNotDisturb()
 {
    findChild<QAction *>("actionUpdateChipDatabase")->setDisabled(true);
+   for (QMenu *menu : {menuCH341, menuCH347T, menuCH347F}) if (menu) menu->setEnabled(false);
+   if (actionDriver) actionDriver->setEnabled(false);
+   if (driverStatusButton) driverStatusButton->setEnabled(false);
    ui->actionDetect->setDisabled(true);
    ui->actionOpen->setDisabled(true);
    ui->actionSave->setDisabled(true);
@@ -2276,6 +2238,9 @@ void MainWindow::doNotDisturb()
 void MainWindow::doNotDisturbCancel()
 {
    findChild<QAction *>("actionUpdateChipDatabase")->setEnabled(true);
+   for (QMenu *menu : {menuCH341, menuCH347T, menuCH347F}) if (menu) menu->setEnabled(true);
+   if (actionDriver) actionDriver->setEnabled(true);
+   if (driverStatusButton) driverStatusButton->setEnabled(true);
    if ((currentChipType == 0) || (currentChipType == 5) || (currentChipType == 6)) ui->actionDetect->setDisabled(false);
    ui->actionOpen->setDisabled(false);
    ui->actionSave->setDisabled(false);
@@ -3036,6 +3001,7 @@ void MainWindow::closeEvent(QCloseEvent( *event))
     settings.endGroup();
     settings.beginGroup("Device");
     settings.setValue("ProgrammerType", current_programmer);
+    settings.setValue("SpiClockKHz", spiClockChoice);
     settings.endGroup();
     settings.beginGroup("FormPosition");
     settings.setValue("geometry", saveGeometry());
@@ -3238,8 +3204,6 @@ void MainWindow::on_actionCheck_erase_triggered()
                         if (currentChipType == 6)
                         {
                             ui->label_nandInfo->setText(tr("NAND operation failed at block/page %1 (error %2).").arg(curBlock).arg(res));
-                            if (res == NAND_ERROR_ECC_UNCORRECTABLE)
-                                ui->label_nandInfo->setText(ui->label_nandInfo->text() + " " + tr("On-die ECC reported an uncorrectable page."));
                         }
                         QMessageBox::about(this, tr("Error"), tr("Error reading block ") + QString::number(curBlock));
                         ProgDeviceClose(current_programmer);
@@ -3353,7 +3317,15 @@ void MainWindow::on_comboBox_raw_currentIndexChanged(int index)
         ui->comboBox_raw->setCurrentIndex(nandRaw ? 1 : 0);
         return;
     }
+    const bool layoutChanged = nandRaw != (index != 0);
     nandRaw = index != 0;
+    // Suggest the usual ECC setting for the layout; it can still be changed.
+    // Main + OOB is normally a raw dump (ECC Off), main only a corrected read.
+    if (layoutChanged)
+    {
+        const int eccIndex = ui->comboBox_onDieEcc->findData(nandRaw ? 0 : 1);
+        if (eccIndex >= 0) ui->comboBox_onDieEcc->setCurrentIndex(eccIndex);
+    }
     if (isNand && uiReady) on_comboBox_size_currentIndexChanged(0);
     updateNandControlVisibility();
     updateNandSelectionInfo();
@@ -3397,11 +3369,11 @@ bool MainWindow::validateNandOperation(bool writing, bool checkBuffer)
     currentNumBlocks = currentPageSize ? currentChipSize / currentPageSize : 0;
     defaultSpeed = getInterfaceSpeed(current_programmer, currentChipType, currentDelay);
     if (!currentChipSize || !currentPageSize || !currentBlockSize ||
-        currentBlockSize % currentPageSize || currentBlockSize / currentPageSize != 64 ||
+        currentBlockSize % currentPageSize ||
         currentChipSize % currentBlockSize ||
         (nandRaw && !currentECCsize) || nandImageSize() > quint64((std::numeric_limits<int>::max)()))
     {
-        QMessageBox::warning(this, tr("Error"), tr("Select valid NAND size, page, block and OOB parameters. This build requires 64 pages per block."));
+        QMessageBox::warning(this, tr("Error"), tr("Select valid NAND size, page, block and OOB parameters."));
         return false;
     }
     if (writing && nandReadIncomplete)
@@ -3437,39 +3409,32 @@ bool MainWindow::prepareNandOperation(const QString &operation)
         QMessageBox::warning(this, tr("Error"), ui->label_nandInfo->text());
         return false;
     }
-    const bool isW25N01GW = id[0] == 0xef && id[1] == 0xba && id[2] == 0x21;
-    if ((ui->comboBox_name->currentText().startsWith("W25N01GW", Qt::CaseInsensitive) && !isW25N01GW) ||
-        (isW25N01GW && (currentPageSize != 2048 || currentECCsize != 64 ||
-                       currentBlockSize != 131072 || currentChipSize != 134217728)))
-    {
-        ui->label_nandInfo->setText(tr("W25N01GW identification/geometry mismatch. Operation stopped."));
-        QMessageBox::warning(this, tr("Error"), ui->label_nandInfo->text());
-        return false;
-    }
-    nand_set_ecc_status_mode(isW25N01GW ? NAND_ECC_STATUS_W25N01GW : NAND_ECC_STATUS_NONE);
+    const int eccMode = nand_ecc_status_mode_for_id(id[0]);
+    const bool isWinbond = eccMode == NAND_ECC_STATUS_WINBOND;
+    nand_set_ecc_status_mode(eccMode);
     nand_reset_ecc_read_status();
-    // W25N01GW always uses buffer reads, including Main-only. Other B0 bits are preserved.
-    result = nand_configure_ecc(current_programmer, eccEnabled, isW25N01GW, &readback);
+    // Winbond W25N parts need BUF=1 for page/column addressed reads
+    // (continuous-read variants power up with BUF=0). Other B0 bits are kept.
+    result = nand_configure_ecc(current_programmer, eccEnabled, isWinbond, &readback);
     if (result != 0)
     {
-        ui->label_nandInfo->setText(tr("ECC setup/readback failed (%1). Operation stopped.").arg(result));
-        qWarning().noquote() << ui->label_nandInfo->text();
+        ui->label_nandInfo->setText(tr("Cannot set on-die ECC (error %1, B0=0x%2). Operation stopped.")
+                                    .arg(result).arg(readback, 2, 16, QLatin1Char('0')));
         QMessageBox::warning(this, tr("Error"), ui->label_nandInfo->text());
         return false;
     }
-    if (isW25N01GW && (readback & 0x40))
+    if (isWinbond && (readback & 0x40))
     {
-        ui->label_nandInfo->setText(tr("W25N01GW OTP mode is enabled. Main-array operation stopped; OTP settings were preserved."));
+        ui->label_nandInfo->setText(tr("Winbond OTP mode is enabled (B0=0x%1). Operation stopped.")
+                                    .arg(readback, 2, 16, QLatin1Char('0')));
         QMessageBox::warning(this, tr("Error"), ui->label_nandInfo->text());
         return false;
     }
-    nandOperationDescription = tr("%1; %2 bytes; ECC %3; B0 readback 0x%4")
+    nandOperationDescription = tr("%1, ECC %2 (ID %3 %4 %5, B0=0x%6)")
         .arg(nandRaw ? tr("Main + OOB") : tr("Main only"))
-        .arg(nandImageSize())
-        .arg(eccEnabled ? tr("On (corrected)") : tr("Off (raw)"))
-        .arg(readback, 2, 16, QLatin1Char('0'));
-    if (isW25N01GW) nandOperationDescription += tr("; BUF=1");
-    else nandOperationDescription += tr("; chip-specific ECC status not decoded");
+        .arg(eccEnabled ? tr("on") : tr("off"))
+        .arg(id[0], 2, 16, QLatin1Char('0')).arg(id[1], 2, 16, QLatin1Char('0'))
+        .arg(id[2], 2, 16, QLatin1Char('0')).arg(readback, 2, 16, QLatin1Char('0'));
     ui->label_nandInfo->setText(operation + ": " + nandOperationDescription);
     qInfo().noquote() << operation << ":" << nandOperationDescription;
     return true;
@@ -3479,11 +3444,51 @@ void MainWindow::finishNandRead(const QString &operation)
 {
     if (currentChipType != 6) return;
     QString summary = operation + ": " + nandOperationDescription;
-    const unsigned int status = nand_get_ecc_read_status();
-    if (status & NAND_ECC_READ_CORRECTED) summary += tr("; corrected page(s) reported");
-    if (status & NAND_ECC_READ_UNCORRECTABLE) summary += tr("; uncorrectable page(s) reported");
+    const unsigned int corrected = nand_get_ecc_corrected_pages();
+    const unsigned int uncorrectable = nand_get_ecc_uncorrectable_pages();
+    if (corrected) summary += tr("; %1 page(s) corrected by ECC").arg(corrected);
+    if (uncorrectable) summary += tr("; %1 page(s) uncorrectable").arg(uncorrectable);
     ui->label_nandInfo->setText(summary);
     qInfo().noquote() << summary;
+    if (!uncorrectable || !pagesPerBlockForReport()) return;
+
+    // List the affected blocks (pages are numbered from 0).
+    std::vector<u32> pages(NAND_ECC_MAX_RECORDED_PAGES);
+    const unsigned int listed = nand_get_ecc_uncorrectable_page_list(pages.data(), NAND_ECC_MAX_RECORDED_PAGES);
+    const u32 ppb = pagesPerBlockForReport();
+    QStringList blocks;
+    u32 lastBlock = 0xffffffffu;
+    for (unsigned int i = 0; i < listed; ++i)
+    {
+        const u32 block = pages[i] / ppb;
+        if (block == lastBlock) continue;
+        lastBlock = block;
+        if (blocks.size() >= 40) { blocks << "..."; break; }
+        blocks << QString::number(block);
+    }
+    const unsigned int totalPages = currentPageSize ? currentChipSize / currentPageSize : 0;
+    QString text = tr("On-die ECC could not correct %1 of %2 pages. Their data was read as-is (uncorrected) and the operation continued.\n\nAffected blocks: %3")
+            .arg(uncorrectable).arg(totalPages).arg(blocks.join(", "));
+    if (totalPages && uncorrectable * 4 > totalPages)
+        text += "\n\n" + tr("Most pages failed. This usually means the data was written by a host controller with its own ECC and on-die ECC disabled. Read this chip with on-die ECC Off.");
+    else
+        text += "\n\n" + tr("A few failing pages are usually bad blocks or worn pages. Compare with a second read, or read with ECC Off to get raw data.");
+    QMessageBox::warning(this, tr("On-die ECC"), text);
+}
+
+bool MainWindow::confirmNandWriteMode()
+{
+    if (currentChipType != 6 || nandRaw || ui->comboBox_onDieEcc->currentData().toBool()) return true;
+    return QMessageBox::question(this, tr("On-die ECC is Off"),
+            tr("Writing main data with on-die ECC Off leaves the spare area without valid ECC bytes. "
+               "A device that reads this chip with on-die ECC On will then see uncorrectable pages.\n\n"
+               "Only continue if the target uses its own (host) ECC. Continue?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+}
+
+uint32_t MainWindow::pagesPerBlockForReport() const
+{
+    return currentPageSize ? currentBlockSize / currentPageSize : 0;
 }
 
 void MainWindow::updateNandControlVisibility()
@@ -3519,13 +3524,13 @@ void MainWindow::updateNandSelectionInfo()
     if (!uiReady) return;
     if (currentChipType != 6) return;
     const bool enabled = ui->comboBox_onDieEcc->currentData().toBool();
-    ui->label_nandInfo->setText(tr("Selected: %1; %2 bytes; ECC %3. Not yet applied.")
+    ui->label_nandInfo->setText(tr("%1, ECC %2, %3 bytes")
         .arg(nandRaw ? tr("Main + OOB") : tr("Main only"))
-        .arg(nandImageSize())
-        .arg(enabled ? tr("On (corrected)") : tr("Off (raw)")));
+        .arg(enabled ? tr("on") : tr("off"))
+        .arg(nandImageSize()));
     if (nandReadIncomplete) ui->label_nandInfo->setText(ui->label_nandInfo->text() + " " + tr("Current buffer is an incomplete NAND read."));
     if (nandRaw && enabled)
-        ui->label_nandInfo->setText(ui->label_nandInfo->text() + " " + tr("ECC-on OOB is not a raw dump. Write is blocked."));
+        ui->label_nandInfo->setText(ui->label_nandInfo->text() + " " + tr("(OOB read with ECC On is not raw; writing needs ECC Off.)"));
 }
 
 void MainWindow::on_comboBox_onDieEcc_currentIndexChanged(int index)
@@ -3558,8 +3563,220 @@ void MainWindow::applyPlatformRestrictions()
     ui->actionCH347F_safe->setChecked(current_programmer == PROG_CH347F_SAFE);
     SetItemStatus("comboBox_type", 1, true); // I2C is not included in this Windows port.
     SetItemStatus("comboBox_type", 2, true); // MicroWire is not included.
-    setWindowTitle(tr("IMSProg 1.9.2 - CH341A/B + CH347T/F Windows SPI"));
+    setWindowTitle(tr("IMSProg 1.9.3 - CH341A/B, CH347T/F SPI Programmer"));
 #endif
+}
+
+int MainWindow::programmerFamily() const
+{
+    if (current_programmer == 2 || current_programmer == 3) return FamilyCH347T;
+    if (PROG_IS_CH347F(current_programmer)) return FamilyCH347F;
+    return FamilyCH341;
+}
+
+void MainWindow::setupProgrammerMenu()
+{
+    // Replace the per-board entries with three families and a submenu of
+    // fixed SPI clocks. The legacy actions stay as hidden objects.
+    QMenu *menu = ui->menuProgrammer_2;
+    for (QAction *legacy : {ui->actionCH341A_B_v1_2, ui->actionCH341A_v1_7, ui->actionCH347T,
+                            ui->actionCH347T_v1_1, ui->actionCH347F_fast, ui->actionCH347F,
+                            ui->actionCH347F_safe, ui->actionFT232H_v1_2})
+        menu->removeAction(legacy);
+    QAction *firstRemaining = menu->actions().isEmpty() ? nullptr : menu->actions().first();
+    programmerChoiceGroup = new QActionGroup(this);
+    programmerChoiceGroup->setExclusive(true);
+
+    const auto addChoice = [this](QMenu *submenu, int family, uint16_t clock, const QString &text) {
+        QAction *action = submenu->addAction(text);
+        action->setCheckable(true);
+        action->setData(QVariantList{family, clock});
+        programmerChoiceGroup->addAction(action);
+        connect(action, &QAction::triggered, this, [this, family, clock] { chooseProgrammer(family, clock); });
+        return action;
+    };
+
+    menuCH341 = new QMenu(tr("CH341A/B"), menu);
+    menuCH341->setObjectName("menuCH341");
+    QAction *ch341 = addChoice(menuCH341, FamilyCH341, 0, tr("Standard (clock fixed by the CH341, about 1.5 MHz)"));
+    ch341->setToolTip(tr("The CH341 SPI clock cannot be changed."));
+
+    const struct { uint16_t khz; const char *text; } clocks[] = {
+        {0,     QT_TR_NOOP("Automatic (per chip type)")},
+        {60000, QT_TR_NOOP("60 MHz (SPI NOR is limited to 30 MHz)")},
+        {30000, QT_TR_NOOP("30 MHz")},
+        {15000, QT_TR_NOOP("15 MHz")},
+        {7500,  QT_TR_NOOP("7.5 MHz")},
+        {3750,  QT_TR_NOOP("3.75 MHz")},
+        {1875,  QT_TR_NOOP("1.875 MHz")},
+    };
+    menuCH347T = new QMenu(tr("CH347T"), menu);
+    menuCH347T->setObjectName("menuCH347T");
+    menuCH347F = new QMenu(tr("CH347F"), menu);
+    menuCH347F->setObjectName("menuCH347F");
+    for (QMenu *submenu : {menuCH347T, menuCH347F})
+    {
+        const int family = submenu == menuCH347T ? FamilyCH347T : FamilyCH347F;
+        for (const auto &clock : clocks)
+        {
+            addChoice(submenu, family, clock.khz, tr(clock.text));
+            if (!clock.khz) submenu->addSeparator();
+        }
+    }
+    for (QMenu *submenu : {menuCH341, menuCH347T, menuCH347F})
+        menu->insertMenu(firstRemaining, submenu);
+
+    if (WchDriver::supported())
+    {
+        actionDriver = new QAction(tr("Driver..."), this);
+        actionDriver->setObjectName("actionDriver");
+        actionDriver->setIcon(style()->standardIcon(QStyle::SP_VistaShield));
+        menu->addAction(actionDriver);
+        connect(actionDriver, &QAction::triggered, this, &MainWindow::showDriverDialog);
+
+        driverStatusButton = new QToolButton(this);
+        driverStatusButton->setObjectName("driverStatusButton");
+        driverStatusButton->setAutoRaise(true);
+        driverStatusButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        driverStatusButton->setToolTip(tr("Programmer driver. Click for details or to install."));
+        connect(driverStatusButton, &QToolButton::clicked, this, &MainWindow::showDriverDialog);
+        ui->statusBar->insertPermanentWidget(1, driverStatusButton, 0);
+    }
+}
+
+void MainWindow::updateProgrammerMenu()
+{
+    const int family = programmerFamily();
+    if (programmerChoiceGroup)
+        for (QAction *action : programmerChoiceGroup->actions())
+        {
+            const QVariantList data = action->data().toList();
+            action->setChecked(data.size() == 2 && data[0].toInt() == family &&
+                               (family == FamilyCH341 || data[1].toUInt() == spiClockChoice));
+        }
+    QString name = family == FamilyCH341 ? QStringLiteral("CH341A/B")
+                 : family == FamilyCH347T ? QStringLiteral("CH347T") : QStringLiteral("CH347F");
+    if (family != FamilyCH341)
+        name += " " + (spiClockChoice ? QString::number(spiClockChoice / 1000.0, 'g', 4) + " MHz" : tr("auto"));
+    ui->lStatus->setText(name);
+}
+
+void MainWindow::chooseProgrammer(int family, uint16_t clockKHz)
+{
+    if (ui->actionStop->isEnabled()) { updateProgrammerMenu(); return; }
+    switch (family)
+    {
+    case FamilyCH347T: on_actionCH347T_triggered(); break;
+    case FamilyCH347F: selectCH347F(PROG_CH347F_STD); break;
+    default: on_actionCH341A_B_v1_2_triggered(); break;
+    }
+    spiClockChoice = family == FamilyCH341 ? 0 : clockKHz;
+    setSpiClockOverride(spiClockChoice);
+    defaultSpeed = getInterfaceSpeed(current_programmer, currentChipType, currentDelay);
+    updateProgrammerMenu();
+}
+
+void MainWindow::refreshDriverStatus()
+{
+    if (!driverStatusButton) return;
+    const WchDriver::Status status = WchDriver::installedStatus();
+    if (status.installed)
+    {
+        driverStatusButton->setIcon(style()->standardIcon(QStyle::SP_DialogApplyButton));
+        driverStatusButton->setText(tr("Driver %1").arg(status.version.isEmpty() ? tr("installed") : status.version));
+    }
+    else
+    {
+        driverStatusButton->setIcon(style()->standardIcon(QStyle::SP_MessageBoxWarning));
+        driverStatusButton->setText(tr("Driver not installed"));
+    }
+}
+
+void MainWindow::showDriverDialog()
+{
+    if (ui->actionStop->isEnabled()) return;
+    const WchDriver::Status status = WchDriver::installedStatus();
+    const QString bundled = WchDriver::bundledVersion();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Programmer driver"));
+    dialog.setWindowFlags(dialog.windowFlags() & ~Qt::WindowContextHelpButtonHint);
+    QVBoxLayout layout(&dialog);
+    QHBoxLayout header;
+    QLabel icon;
+    icon.setPixmap(style()->standardIcon(status.installed ? QStyle::SP_MessageBoxInformation
+                                                          : QStyle::SP_MessageBoxWarning).pixmap(32, 32));
+    icon.setAlignment(Qt::AlignTop);
+    QLabel headline(status.installed ? tr("The programmer driver is installed.")
+                                     : tr("The programmer driver is not installed."));
+    QFont bold = headline.font();
+    bold.setBold(true);
+    headline.setFont(bold);
+    header.addWidget(&icon);
+    header.addWidget(&headline, 1);
+    layout.addLayout(&header);
+
+    QFormLayout form;
+    QLabel installedLabel(status.installed ? (status.version.isEmpty() ? tr("Yes") : status.version) : tr("No"));
+    QLabel bundledLabel(bundled.isEmpty() ? tr("Not included") : bundled);
+    QLabel devicesLabel(tr("CH341A/B, CH347T, CH347F (SPI/I2C interface)"));
+    QLabel publisherLabel(tr("WCH (wch.cn), signed by Microsoft"));
+    form.addRow(tr("Installed version:"), &installedLabel);
+    form.addRow(tr("Included version:"), &bundledLabel);
+    form.addRow(tr("Devices:"), &devicesLabel);
+    form.addRow(tr("Publisher:"), &publisherLabel);
+    layout.addLayout(&form);
+
+    QLabel note(tr("Installing requires administrator rights; Windows will ask for permission. "
+                   "The serial (COM) ports of the CH347 are not changed."));
+    note.setWordWrap(true);
+    layout.addWidget(&note);
+
+    QDialogButtonBox buttons;
+    QPushButton *install = buttons.addButton(status.installed ? tr("Reinstall driver") : tr("Install driver"),
+                                             QDialogButtonBox::AcceptRole);
+    install->setIcon(style()->standardIcon(QStyle::SP_VistaShield));
+    install->setEnabled(!bundled.isEmpty());
+    install->setDefault(!status.installed);
+    buttons.addButton(QDialogButtonBox::Close);
+    connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(install, &QPushButton::clicked, &dialog, [&] {
+        install->setEnabled(false);
+        buttons.setEnabled(false);
+        headline.setText(tr("Installing driver..."));
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        const bool timerWasActive = timer->isActive();
+        timer->stop();
+        QString detail;
+        const WchDriver::Result result = WchDriver::install(&dialog, &detail);
+        QApplication::restoreOverrideCursor();
+        if (timerWasActive) timer->start();
+        buttons.setEnabled(true);
+        refreshDriverStatus();
+        const WchDriver::Status now = WchDriver::installedStatus();
+        installedLabel.setText(now.installed ? (now.version.isEmpty() ? tr("Yes") : now.version) : tr("No"));
+        switch (result)
+        {
+        case WchDriver::Installed:
+            icon.setPixmap(style()->standardIcon(QStyle::SP_MessageBoxInformation).pixmap(32, 32));
+            headline.setText(tr("Driver installed. Reconnect the programmer if it is plugged in."));
+            install->setText(tr("Reinstall driver"));
+            break;
+        case WchDriver::InstalledRebootRequired:
+            icon.setPixmap(style()->standardIcon(QStyle::SP_MessageBoxInformation).pixmap(32, 32));
+            headline.setText(tr("Driver installed. Restart Windows to finish."));
+            break;
+        case WchDriver::Cancelled:
+            headline.setText(tr("Installation cancelled."));
+            break;
+        case WchDriver::Failed:
+            icon.setPixmap(style()->standardIcon(QStyle::SP_MessageBoxCritical).pixmap(32, 32));
+            headline.setText(tr("Driver installation failed. %1").arg(detail));
+            break;
+        }
+        install->setEnabled(true);
+    });
+    dialog.exec();
 }
 
 void MainWindow::showConnectionError()
@@ -3568,7 +3785,10 @@ void MainWindow::showConnectionError()
 #ifdef _WIN32
     const QString reason = QString::fromUtf8(ch347_windows_last_error());
     if (!reason.isEmpty()) message += "\n\n" + reason;
-    message += "\n\n" + tr("Open Programmer > Programmer connection diagnostics to copy the selected programmer's driver/device report. Do not change drivers just because connection failed.");
+    if (!WchDriver::installedStatus().installed && !WchDriver::bundledInfPath().isEmpty())
+        message += "\n\n" + tr("The programmer driver is not installed. Install it from Programmer > Driver.");
+    else
+        message += "\n\n" + tr("Open Programmer > Programmer connection diagnostics to copy the selected programmer's driver/device report.");
 #endif
     QMessageBox::warning(this, tr("Error"), message);
 }

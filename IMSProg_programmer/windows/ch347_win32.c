@@ -193,6 +193,40 @@ static HMODULE load_app_dll(const WCHAR *name, const char *display_name)
     return module;
 }
 
+/* WCH vendor DLLs: prefer a copy beside the executable, then the bundled
+ * driver package folder (driver\), then the copy the WCH driver installs in
+ * System32. Every candidate is loaded by absolute path or System32 only. */
+static HMODULE load_vendor_dll(const WCHAR *name, const char *display_name)
+{
+    static const WCHAR *const subdirs[] = {L"", L"driver\\"};
+    WCHAR path[32768];
+    DWORD n = GetModuleFileNameW(NULL, path, (DWORD)(sizeof(path) / sizeof(path[0])));
+    WCHAR *slash;
+    HMODULE module;
+    if (n && n < sizeof(path) / sizeof(path[0]) && (slash = wcsrchr(path, L'\\')) != NULL) {
+        for (size_t i = 0; i < sizeof(subdirs) / sizeof(subdirs[0]); ++i) {
+            slash[1] = 0;
+            if ((size_t)(slash - path) + 1 + wcslen(subdirs[i]) + wcslen(name) >= sizeof(path) / sizeof(path[0]))
+                break;
+            wcscat(path, subdirs[i]);
+            wcscat(path, name);
+            if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) continue;
+            report_append("Loading %s%s from the program folder.\n", i ? "driver\\" : "", display_name);
+            SetLastError(0);
+            module = LoadLibraryExW(path, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (!module) report_error("DLL load failed (Windows error %lu). Check DLL presence, architecture and dependent system libraries.", GetLastError());
+            else report_append("DLL load: success.\n");
+            return module;
+        }
+    }
+    report_append("Loading %s from System32 (installed with the WCH driver).\n", display_name);
+    SetLastError(0);
+    module = LoadLibraryExW(name, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!module) report_error("%s not found (Windows error %lu). Install the driver: Programmer > Driver.", display_name, GetLastError());
+    else report_append("DLL load: success.\n");
+    return module;
+}
+
 static void begin_connection_report(int diagnostic_only, int family)
 {
     char previous[sizeof(last_error)];
@@ -207,6 +241,21 @@ static void begin_connection_report(int diagnostic_only, int family)
     report_append("Selected family: %s. Family-specific matching only; another family is never a fallback target.\n", family_name(family));
     report_append("Required IDs: %s. Existing-driver libusb first; WCH vendor fallback only before SPI I/O.\n",
                   family == FAMILY_CH341 ? "VID_1A86 or VID_4348, PID_5512 (parallel/SPI mode)" : ch347_required_ids());
+}
+
+/* Identify the SPI function by VID/PID and USB interface number in DeviceID.
+ * FuncType 1 = SPI/I2C, 3 = JTAG/SPI/I2C (CH347F with WCH driver 2.6+).
+ * ChipMode is not used: current WCH DLLs report 0 for CH347F. */
+static int wch_info_matches_model(const wch_device_info *info, int model, const char *pid_text)
+{
+    char interface_text[8];
+    const char *mi;
+    if (info->UsbClass != 0) return 0;
+    if (info->FuncType != 1 && info->FuncType != 3) return 0;
+    if (!strstr(info->DeviceID, "VID_1A86") || !strstr(info->DeviceID, pid_text)) return 0;
+    snprintf(interface_text, sizeof(interface_text), "MI_%02X", ch347_model_interface(model));
+    mi = strstr(info->DeviceID, "MI_");
+    return !mi || strncmp(mi, interface_text, 5) == 0;
 }
 
 static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
@@ -226,9 +275,9 @@ static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
     b->out_endpoint = 0x06; b->in_endpoint = 0x86;
     p->windows_backend = b;
 #ifdef _WIN64
-    b->module = load_app_dll(L"CH347DLLA64.DLL", "CH347DLLA64.DLL");
+    b->module = load_vendor_dll(L"CH347DLLA64.DLL", "CH347DLLA64.DLL");
 #else
-    b->module = load_app_dll(L"CH347DLL.DLL", "CH347DLL.DLL");
+    b->module = load_vendor_dll(L"CH347DLL.DLL", "CH347DLL.DLL");
 #endif
     if (!b->module) goto fail;
 #define LOAD_MEMBER(member, type, name) do { \
@@ -270,8 +319,7 @@ static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
         report_append("Index %lu: ID=%s; UsbClass=%u FuncType=%u ChipMode=%u Interface=%u; EP in=0x%02X out=0x%02X; firmware=0x%02X.\n",
                       i, info.DeviceID, info.UsbClass, info.FuncType, info.ChipMode,
                       info.CH347IfNum, info.DataUpEndp, info.DataDnEndp, info.FirewareVer);
-        if (info.UsbClass != 0 || info.FuncType != 1 || info.ChipMode != ch347_model_wch_chip_mode(model) ||
-            !strstr(info.DeviceID, "VID_1A86") || !strstr(info.DeviceID, pid_text)) {
+        if (!wch_info_matches_model(&info, model, pid_text)) {
             ++rejected_count;
             report_append("Index %lu: excluded by this port's mode/driver/function/VID-PID filter.\n", i);
             b->close(i);
@@ -352,9 +400,9 @@ static int windows341_open_impl(struct ch347_priv *p, int diagnostic_only)
     p->windows_backend = b;
     report_append("Trying CH341 vendor DLL; VID/PID and bulk configuration are verified before any SPI command.\n");
 #ifdef _WIN64
-    b->module = load_app_dll(L"CH341DLLA64.DLL", "CH341DLLA64.DLL");
+    b->module = load_vendor_dll(L"CH341DLLA64.DLL", "CH341DLLA64.DLL");
 #else
-    b->module = load_app_dll(L"CH341DLL.DLL", "CH341DLL.DLL");
+    b->module = load_vendor_dll(L"CH341DLL.DLL", "CH341DLL.DLL");
 #endif
     if (!b->module) goto fail;
 #define LOAD_341(member, type, name) do { \

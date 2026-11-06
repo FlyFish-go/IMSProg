@@ -21,7 +21,8 @@ struct Fake {
     unsigned char readbackExtra = 0;
     int opens = 0, closes = 0, configureCalls = 0, ecc = -1, bufferMode = -1;
     int eccMode = -1;
-    unsigned int eccStatus = 0;
+    unsigned int eccStatus = 0, eccCorrected = 0, eccUncorrectable = 0;
+    unsigned int lastErasePages = 0;
     unsigned char id[3] = {0xc8, 0xd1, 0x00};
     bool erasedReads = false;
     std::set<unsigned int> badBlocks;
@@ -135,6 +136,13 @@ int __wrap_nand_configure_ecc(u8 programmer, int enabled, int buffered, u8 *read
 void __wrap_nand_set_ecc_status_mode(int mode) { fake.eccMode = mode; }
 void __wrap_nand_reset_ecc_read_status() { fake.eccStatus = 0; }
 unsigned int __wrap_nand_get_ecc_read_status() { return fake.eccStatus; }
+unsigned int __wrap_nand_get_ecc_corrected_pages() { return fake.eccCorrected; }
+unsigned int __wrap_nand_get_ecc_uncorrectable_pages() { return fake.eccUncorrectable; }
+unsigned int __wrap_nand_get_ecc_uncorrectable_page_list(u32 *pages, unsigned int max) {
+    unsigned int n = fake.eccUncorrectable < max ? fake.eccUncorrectable : max;
+    for (unsigned int i = 0; i < n; ++i) pages[i] = i * 3; // pages 0,3,6... -> blocks 0,0,...
+    return n;
+}
 int __wrap_nand_unprotect(u8 programmer) { checkProgrammer(programmer); return 0; }
 int __wrap_nand_checkBadBlock(u32 block, u32, u32, u8 programmer) {
     checkProgrammer(programmer);
@@ -159,8 +167,9 @@ int __wrap_nand_block_write(unsigned char *data, unsigned int pageSize, u32 bloc
     fake.writes.push_back({pageSize, block, pages, data[0]});
     return fake.writeResult;
 }
-int __wrap_nand_block_erase(unsigned int block, unsigned int, u8 programmer) {
+int __wrap_nand_block_erase(unsigned int block, unsigned int pages, u8 programmer) {
     checkProgrammer(programmer);
+    fake.lastErasePages = pages;
     fake.erases.push_back(block);
     if (fake.afterErase) { auto callback = fake.afterErase; fake.afterErase = {}; callback(); }
     return static_cast<int>(block) == fake.eraseFailBlock ? -1 : 0;
@@ -201,7 +210,38 @@ int main(int argc, char **argv) {
     QSettings settings(settingsDir.filePath("config.ini"), QSettings::IniFormat);
     settings.setValue("Device/ProgrammerType", 2);
     settings.sync();
+    app.setProperty("app/portableSmokeTest", true);
+    {
+        // Legacy "CH347F low speed" preset migrates to CH347F + fixed 7.5 MHz.
+        settings.setValue("Device/ProgrammerType", PROG_CH347F_SAFE);
+        settings.sync();
+        MainWindow migrated;
+        check(migrated.current_programmer == PROG_CH347F_STD && migrated.spiClockChoice == 7500,
+              "legacy CH347F low-speed preset migrates to a fixed 7.5 MHz clock");
+        settings.setValue("Device/ProgrammerType", 4);
+        settings.sync();
+        MainWindow noFtdi;
+        check(noFtdi.current_programmer == 0, "legacy FT232H selection falls back to CH341A/B");
+        settings.setValue("Device/ProgrammerType", 2);
+        settings.remove("Device/SpiClockKHz");
+        settings.sync();
+    }
+    {
+        MainWindow smokeWindow;
+        check(!smokeWindow.timer->isActive(), "portable smoke test disables the hardware probe timer");
+        check(fake.opens == 0 && fake.closes == 0, "portable smoke constructor never opens a programmer");
+        QEventLoop startupLoop;
+        QTimer::singleShot(2100, &startupLoop, &QEventLoop::quit);
+        startupLoop.exec();
+        check(fake.opens == 0 && fake.closes == 0, "portable smoke test stays hardware-free past the probe interval");
+    }
+    app.setProperty("app/portableSmokeTest", false);
+    if (argc > 2 && std::strcmp(argv[2], "--portable-smoke-test-only") == 0) {
+        std::printf("PASS: portable smoke startup never opens a programmer and keeps the probe timer stopped\n");
+        return 0;
+    }
     MainWindow w;
+    check(w.timer->isActive(), "normal startup retains the hardware probe timer");
     w.timer->stop();
     check(w.hexEdit != nullptr && w.uiReady, "constructor completes with initialized editor and selectors");
     QAction *updateDatabase = w.findChild<QAction *>("actionUpdateChipDatabase");
@@ -213,16 +253,48 @@ int main(int argc, char **argv) {
     w.resize(950, 631);
     w.show();
     app.processEvents();
-    QScrollArea *parameterScroll = w.findChild<QScrollArea *>("parameterScroll");
-    check(parameterScroll != nullptr, "chip configuration has a scrollable container");
+    // Original IMSProg layout: no extra scroll container is inserted.
+    check(w.findChild<QScrollArea *>("parameterScroll") == nullptr, "original parameter layout is kept");
     for (const char *name : {"pushButton", "pushButton_2", "pushButton_3"}) {
         QWidget *button = w.findChild<QWidget *>(name);
-        check(button && button->isVisible() &&
-              w.rect().contains(QRect(button->mapTo(&w, QPoint()), button->size())),
-              "read, detect and run remain reachable at the default window size");
-        check(!parameterScroll->isAncestorOf(button), "operation controls remain outside the scrolling parameters");
+        check(button && button->isVisible(), "read, detect and run buttons are visible");
     }
     w.hide();
+
+    // Programmer menu v2: three families with fixed-clock submenus, no FT232H.
+    {
+        QMenu *programmerMenu = w.findChild<QMenu *>("menuProgrammer_2");
+        QStringList entries;
+        for (QAction *a : programmerMenu->actions()) if (a->isVisible() && !a->isSeparator()) entries << a->text();
+        check(entries.size() >= 3 && entries[0] == "CH341A/B" && entries[1] == "CH347T" && entries[2] == "CH347F",
+              "programmer menu starts with CH341A/B, CH347T, CH347F");
+        check(!entries.join(" ").contains("FT232"), "FT232H removed from programmer menu");
+        QMenu *f = w.findChild<QMenu *>("menuCH347F");
+        QAction *f7500 = nullptr, *t60 = nullptr;
+        for (QAction *a : f->actions()) if (a->data().toList().value(1).toUInt() == 7500) f7500 = a;
+        for (QAction *a : w.findChild<QMenu *>("menuCH347T")->actions())
+            if (a->data().toList().value(1).toUInt() == 60000) t60 = a;
+        check(f7500 && t60, "fixed clock entries exist");
+        f7500->trigger();
+        check(w.current_programmer == PROG_CH347F_STD && w.spiClockChoice == 7500 && getSpiClockOverride() == 7500,
+              "CH347F 7.5 MHz selects the CH347F with a fixed clock");
+        check(w.findChild<QLabel *>("lStatus")->text() == "CH347F 7.5 MHz" && f7500->isChecked(),
+              "status bar and menu show the chosen programmer and clock");
+        t60->trigger();
+        check(w.current_programmer == 2 && getInterfaceSpeed(2, 0, 1000) == 30000 && getInterfaceSpeed(2, 6, 1000) == 60000,
+              "CH347T 60 MHz: NAND 60, NOR capped at 30");
+        w.findChild<QMenu *>("menuCH341")->actions().first()->trigger();
+        check(w.current_programmer == 0 && getSpiClockOverride() == 0 && w.findChild<QLabel *>("lStatus")->text() == "CH341A/B",
+              "CH341A/B has no fixed-clock override");
+        w.doNotDisturb();
+        check(!w.findChild<QMenu *>("menuCH347F")->isEnabled(), "programmer menus locked during chip I/O");
+        w.doNotDisturbCancel();
+        check(w.findChild<QMenu *>("menuCH347F")->isEnabled(), "programmer menus restored after chip I/O");
+        // Return to the CH347T state the remaining cases expect.
+        for (QAction *a : w.findChild<QMenu *>("menuCH347T")->actions())
+            if (!a->isSeparator() && a->data().toList().value(1).toUInt() == 0) a->trigger();
+        check(w.current_programmer == 2 && getSpiClockOverride() == 0, "CH347T automatic restores table clocks");
+    }
 
     check(combo(w, "comboBox_raw")->count() == 2, "exactly two image layouts");
     check(combo(w, "comboBox_onDieEcc")->count() == 2, "exactly two independent ECC choices");
@@ -380,6 +452,15 @@ int main(int argc, char **argv) {
           "cancelled layout change preserves image and independent ECC state");
     check(fake.opens == 0, "layout selection never opens programmer");
 
+    // An accepted layout change suggests the usual ECC state for that layout.
+    reset(w, false, true);
+    choose(w, "comboBox_raw", 1);
+    check(w.nandRaw && !combo(w, "comboBox_onDieEcc")->currentData().toBool(), "Main + OOB suggests ECC Off");
+    choose(w, "comboBox_onDieEcc", 1);
+    check(combo(w, "comboBox_onDieEcc")->currentData().toBool(), "suggested ECC can still be overridden");
+    choose(w, "comboBox_raw", 0);
+    check(!w.nandRaw && combo(w, "comboBox_onDieEcc")->currentData().toBool(), "Main only suggests ECC On");
+
     reset(w);
     w.slotTimerAlarm();
     check(w.statusCH341 == 0 && fake.lastSpeed >= 468, "periodic CH347 probe uses valid SPI clock");
@@ -466,9 +547,10 @@ int main(int argc, char **argv) {
     check(fake.opens == 0, "invalid block geometry blocked before device init");
 
     reset(w);
-    choose(w, "comboBox_block", 65536); // 32 pages/block; production erase is 64-page only.
+    choose(w, "comboBox_block", 65536); // 32 pages/block
+    choose(w, "comboBox_size", 131072);
     w.on_actionErase_triggered();
-    check(fake.opens == 0 && fake.erases.empty(), "unsupported pages-per-block geometry cannot erase wrong rows");
+    check(fake.erases.size() == 2 && fake.lastErasePages == 32, "erase passes the real pages-per-block");
 
     // Setup readback failure cannot fall through to data I/O or destructive I/O.
     reset(w);
@@ -488,13 +570,14 @@ int main(int argc, char **argv) {
 
     reset(w);
     std::memcpy(fake.id, "\xef\xba\x21", 3);
-    w.on_pushButton_clicked();
-    check(fake.configureCalls == 0 && fake.reads.empty(), "W25N01GW wrong geometry fails before configuration");
+    check(w.prepareNandOperation("Test"), "Winbond accepted without a hard-coded geometry");
+    check(fake.bufferMode == 1 && fake.ecc == 0 && fake.eccMode == NAND_ECC_STATUS_WINBOND,
+          "Winbond requests BUF=1 and Winbond ECC decoding");
     reset(w);
-    std::memcpy(fake.id, "\xef\xba\x21", 3);
-    w.currentChipSize = 134217728;
-    check(w.prepareNandOperation("Test"), "W25N01GW exact geometry accepted");
-    check(fake.bufferMode == 1 && fake.ecc == 0, "W25N01GW raw main-only explicitly requires BUF=1");
+    std::memcpy(fake.id, "\xc8\xd1\x00", 3);
+    check(w.prepareNandOperation("Test"), "GigaDevice accepted");
+    check(fake.bufferMode == 0 && fake.eccMode == NAND_ECC_STATUS_GENERIC,
+          "non-Winbond keeps B0 BUF untouched and uses generic ECC decoding");
 
     reset(w);
     choose(w, "comboBox_size", 134217728);
@@ -507,29 +590,56 @@ int main(int argc, char **argv) {
     w.on_actionErase_triggered();
     check(fake.writes.empty() && fake.erases.empty(), "W25N01GW OTP mode blocks both write and erase");
 
-    reset(w, true, true);
-    fake.readFailBlock = 0;
-    fake.readError = -1002;
+    // Uncorrectable ECC pages never stop a read: the whole chip is read and
+    // the affected pages are reported afterwards.
+    reset(w, false, true);
+    fake.eccUncorrectable = 3;
     dialogs.clear();
     w.on_pushButton_clicked();
-    check(w.nandReadIncomplete && fake.reads.size() == 1,
-          "uncorrectable ECC read stops and marks image incomplete");
-    check(!dialogs.join(" ").contains("The operation was successful"), "failed read never reports success");
-    reset(w, true, true);
+    check(!w.nandReadIncomplete && fake.reads.size() == 2, "uncorrectable ECC pages do not stop Read");
+    check(dialogs.join(" ").contains("could not correct 3"), "uncorrectable pages are reported after Read");
+    check(w.findChild<QLabel *>("label_nandInfo")->text().contains("3"), "uncorrectable count shown in NAND info");
+    reset(w, false, true);
+    fake.eccUncorrectable = 100; // > 1/4 of 128 pages
+    dialogs.clear();
+    w.on_pushButton_clicked();
+    check(dialogs.join(" ").contains("host controller"), "mostly-uncorrectable read suggests ECC Off");
+    // A transport error still stops and marks the image incomplete.
+    reset(w, true, false);
     fake.readFailBlock = 0;
-    fake.readError = -1002;
+    fake.readError = -1007;
+    dialogs.clear();
+    w.on_pushButton_clicked();
+    check(w.nandReadIncomplete && fake.reads.size() == 1, "transport error stops Read and marks image incomplete");
+    check(!dialogs.join(" ").contains("The operation was successful"), "failed read never reports success");
+    reset(w, true, false);
+    fake.readFailBlock = 0;
+    fake.readError = -1007;
     dialogs.clear();
     w.on_actionVerify_triggered();
-    check(!w.lastOperationSucceeded && fake.reads.size() == 1, "uncorrectable ECC Verify stops at first page block");
+    check(!w.lastOperationSucceeded && fake.reads.size() == 1, "transport error stops Verify");
     check(!dialogs.join(" ").contains("The operation was successful"), "failed Verify never reports success");
 
     for (bool ecc : {false, true}) {
         reset(w, false, ecc);
         setImage(w);
+        dialogs.clear();
         w.on_actionWrite_triggered();
         check(w.lastOperationSucceeded && fake.writes.size() == 2 && fake.ecc == ecc,
               "main-only writing independently accepts ECC Off and On");
+        check(dialogs.join(" ").contains("without valid ECC bytes") == !ecc,
+              "main-only ECC-Off write asks for confirmation");
     }
+    reset(w, false, false);
+    setImage(w);
+    answer = QMessageBox::No;
+    w.on_actionWrite_triggered();
+    check(fake.opens == 0 && fake.writes.empty(), "declined ECC-Off write never opens the programmer");
+    box(w, "checkBox")->setChecked(true);
+    box(w, "checkBox_2")->setChecked(true);
+    w.on_pushButton_3_clicked();
+    check(fake.erases.empty() && fake.writes.empty(), "declined ECC-Off batch is cancelled before erase");
+    answer = QMessageBox::Yes;
 
     // Raw bad-block skipping retains physical image positions and propagates errors.
     reset(w, true, false, 3);

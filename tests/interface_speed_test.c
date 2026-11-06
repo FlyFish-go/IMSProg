@@ -59,6 +59,23 @@ int main(void)
     expect_speed("CH347F low NOR fixed cap", getAuxiliaryInterfaceSpeed(7, 0, 5000), 5000);
     expect_speed("CH347F low 45xx", getAuxiliaryInterfaceSpeed(7, 5, 5000), 1875);
 
-    puts("PASS: CH347F auxiliary speed limits");
+    /* Fixed SPI clock from the Programmer menu (CH347 only). */
+    setSpiClockOverride(7500);
+    expect_speed("CH347F 7.5 MHz NOR", getInterfaceSpeed(5, 0, 1000), 7500);
+    expect_speed("CH347F 7.5 MHz NAND", getInterfaceSpeed(5, 6, 1000), 7500);
+    expect_speed("CH347T 7.5 MHz NAND", getInterfaceSpeed(2, 6, 1000), 7500);
+    expect_speed("CH347F 7.5 MHz 25xx never above default", getInterfaceSpeed(5, 3, 1000), 5000);
+    expect_speed("CH347F 7.5 MHz I2C unaffected", getInterfaceSpeed(5, 1, 1000), 400);
+    expect_speed("CH341 ignores fixed clock", getInterfaceSpeed(0, 0, 1000), 1600);
+    expect_speed("CH347F chip delay still scales", getInterfaceSpeed(5, 0, 500), 3750);
+    setSpiClockOverride(60000);
+    expect_speed("CH347T 60 MHz NOR capped at 30", getInterfaceSpeed(2, 0, 1000), 30000);
+    expect_speed("CH347T 60 MHz NAND", getInterfaceSpeed(2, 6, 1000), 60000);
+    expect_speed("CH347F 60 MHz EEPROM keeps default", getInterfaceSpeed(5, 3, 1000), 5000);
+    expect_speed("CH347F 60 MHz aux NAND still capped", getAuxiliaryInterfaceSpeed(5, 6, 15000), 15000);
+    setSpiClockOverride(0);
+    expect_speed("automatic restores table", getInterfaceSpeed(5, 6, 1000), 30000);
+
+    puts("PASS: CH347F auxiliary speed limits and fixed SPI clocks");
     return EXIT_SUCCESS;
 }

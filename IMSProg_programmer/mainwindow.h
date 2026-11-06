@@ -24,6 +24,8 @@
 #include <QSettings>
 #include <QResizeEvent>
 #include <QComboBox>
+#include <QToolButton>
+#include <QActionGroup>
 #include <QStandardItemModel>
 #include <QMetaObject>
 #include "platform_sleep.h"
@@ -169,6 +171,22 @@ private:
     void updateNandSelectionInfo();
     void updateNandControlVisibility();
     void finishNandRead(const QString &operation);
+    uint32_t pagesPerBlockForReport() const;
+    bool confirmNandWriteMode();
+    bool nandWriteModeConfirmed = false;
+    // Programmer menu: CH341A/B, CH347T, CH347F, each with fixed SPI clocks.
+    enum ProgrammerFamily { FamilyCH341 = 0, FamilyCH347T = 1, FamilyCH347F = 2 };
+    QMenu *menuCH341 = nullptr, *menuCH347T = nullptr, *menuCH347F = nullptr;
+    QActionGroup *programmerChoiceGroup = nullptr;
+    QAction *actionDriver = nullptr;
+    QToolButton *driverStatusButton = nullptr;
+    uint16_t spiClockChoice = 0; // kHz; 0 = automatic per chip
+    int programmerFamily() const;
+    void setupProgrammerMenu();
+    void updateProgrammerMenu();
+    void chooseProgrammer(int family, uint16_t clockKHz);
+    void refreshDriverStatus();
+    void showDriverDialog();
     void applyPlatformRestrictions();
     void showConnectionError();
     uint8_t numberOfReads;
