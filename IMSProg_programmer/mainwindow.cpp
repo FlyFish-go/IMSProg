@@ -1655,6 +1655,7 @@ void MainWindow::on_actionVerify_triggered()
     const uint16_t verifyStartClock = currentChipType != 1 ? defaultSpeed : currentI2CBusSpeed;
     uint16_t verifyClock = verifyStartClock;
     uint32_t verifyRereadBlocks = 0;
+    uint32_t verifyRetriedBlocks = 0;   // matched on a second read at the same clock
     QStringList verifySkippedBadBlocks;
     // Main-only Write with bad-block skipping writes the data of a skipped
     // block into the next good block (see on_actionWrite_triggered()).
@@ -1878,6 +1879,27 @@ void MainWindow::on_actionVerify_triggered()
                               j = firstDifference();
                           }
                           if (j == step) ++verifyRereadBlocks;   // read error, data is correct
+                          // A fixed-clock programmer (CH341A/B) cannot slow down: read the
+                          // block again instead. A read that equals the buffer proves the
+                          // data on the chip; a real write error differs every time.
+                          for (int attempt = 0; lower.size() == 1 && attempt < 2 && j < step; ++attempt)
+                          {
+                              ui->statusMessage->setText(tr("Verify: block %1 differs, reading it again").arg(k));
+                              qApp->processEvents();
+                              res = readChipUnit(buf.get(), k, step, sectorsPerBlock);
+                              if (statusCH341 != 0 || res <= 0)
+                              {
+                                  if (statusCH341 != 0) showConnectionError();
+                                  else QMessageBox::about(this, tr("Error"), tr("Error reading block ") + QString::number(curBlock));
+                                  ProgDeviceClose(current_programmer);
+                                  ui->checkBox_3->setStyleSheet("");
+                                  doNotDisturbCancel();
+                                  clearCheckboxes();
+                                  return;
+                              }
+                              j = firstDifference();
+                              if (j == step) ++verifyRetriedBlocks;
+                          }
                       }
                       if (j < step)
                       {
@@ -1940,9 +1962,12 @@ void MainWindow::on_actionVerify_triggered()
                      badNote += "\n" + tr("The data was moved past them, so the last %1 block(s) of the image did not fit on the chip and were not compared.")
                                           .arg(verifySkippedBadBlocks.size());
              }
-             if (verifyRereadBlocks || !badNote.isEmpty())
+             if (verifyRereadBlocks || verifyRetriedBlocks || !badNote.isEmpty())
              {
                  QString note;
+                 if (verifyRetriedBlocks)
+                     note = "\n\n" + tr("%1 block(s) read differently the first time but matched the buffer when read again. The data on the chip is correct; the first read was disturbed. Check the clip contact and wiring.")
+                                          .arg(verifyRetriedBlocks);
                  if (verifyRereadBlocks)
                  {
                      note = "\n\n" + tr("%1 block(s) read differently at %2 but matched the buffer at %3. The data on the chip is correct; %2 is too fast for reading this chip. Use %3 or lower next time.")

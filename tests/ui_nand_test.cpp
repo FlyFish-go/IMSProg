@@ -932,6 +932,30 @@ int main(int argc, char **argv) {
               "verify: error message says the difference is real");
     }
 
+    // A fixed-clock programmer re-reads a mismatching block at the same clock.
+    {
+        reset(w, false, false, 4);
+        w.on_actionCH341A_B_v1_2_triggered();
+        setImage(w);
+        dialogs.clear();
+        int block1Reads = 0;
+        fake.corruptRead = [&](unsigned char *out, u32 block) {
+            if (block == 1 && ++block1Reads == 1) out[33] ^= 0x10;   // only the first read is disturbed
+        };
+        w.on_actionVerify_triggered();
+        check(w.lastOperationSucceeded && fake.reads.size() == 4 + 1 && !dialogs.isEmpty() &&
+              dialogs.last().contains("matched the buffer when read again"),
+              "verify: CH341 re-reads a transient mismatch at the same clock and passes");
+
+        reset(w, false, false, 4);
+        w.on_actionCH341A_B_v1_2_triggered();
+        setImage(w);
+        fake.corruptRead = [&](unsigned char *out, u32 block) { if (block == 2) out[5] ^= 0x01; };
+        w.on_actionVerify_triggered();
+        check(!w.lastOperationSucceeded && fake.reads.size() == 3 + 2,
+              "verify: CH341 still reports a difference that repeats on every read");
+    }
+
     if (argc > 2) {
         reset(w, true, false);
         auto *manufacturers = combo(w, "comboBox_man");

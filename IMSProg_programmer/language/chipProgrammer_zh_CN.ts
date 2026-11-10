@@ -3011,6 +3011,14 @@ Off: raw read. Use Off for chips written by a host controller with its own ECC (
         <source>The buffer is smaller than the chip. Reload the image or select the chip again.</source>
         <translation>缓冲区比芯片容量小。请重新载入镜像，或重新选择芯片。</translation>
     </message>
+    <message>
+        <source>Verify: block %1 differs, reading it again</source>
+        <translation>校验：第 %1 块不一致，正在重读</translation>
+    </message>
+    <message>
+        <source>%1 block(s) read differently the first time but matched the buffer when read again. The data on the chip is correct; the first read was disturbed. Check the clip contact and wiring.</source>
+        <translation>有 %1 个块第一次读出的数据不一致，重读后与缓冲区一致。芯片上的数据是正确的，第一次读取受到了干扰，请检查夹子接触和接线。</translation>
+    </message>
 </context>
 <context>
     <name>QObject</name>
