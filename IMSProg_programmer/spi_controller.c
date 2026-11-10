@@ -334,6 +334,27 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Write_NByte( u8 *ptr_data, u32 len, SPI_CONT
     }
 }
 
+int SPI_CONTROLLER_Has_Full_Duplex( u8 deviceType )
+{
+    switch (deviceType)
+    {
+    case 2: // CH347T v1.0
+    case 3: // CH347T v1.1
+    case 5: // CH347F standard
+    case 6: // CH347F high speed
+    case 7: // CH347F low speed
+        return 1;
+    }
+    return 0;
+}
+
+SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Full_Duplex( u8 *buf, u32 len, u8 deviceType )
+{
+    if (!SPI_CONTROLLER_Has_Full_Duplex(deviceType))
+        return SPI_CONTROLLER_RTN_DEF_NO;
+    return (SPI_CONTROLLER_RTN_T)ch347_spi_trx_full_duplex(priv, buf, len);
+}
+
 #if 0
 SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Xfer_NByte( u8 *ptr_data_in, u32 len_in, u8 *ptr_data_out, u32 len_out, SPI_CONTROLLER_SPEED_T speed )
 {

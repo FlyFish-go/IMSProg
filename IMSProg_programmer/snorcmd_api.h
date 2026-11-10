@@ -17,6 +17,11 @@
 #define __SNORCMD_API_H__
 #include "types.h"
 
+/* Optional host hook, called between complete pages of long NOR/NAND
+ * read/program loops so a GUI can keep handling input. Never called in the
+ * middle of an SPI transaction. NULL disables it. */
+extern void (*imsprog_progress_hook)(void);
+
 int snor_wait_ready(int sleep_ms);
 int snor_read(unsigned char *buf, unsigned long from, unsigned long len);
 int snor_read_param(unsigned char *buf, unsigned long from, unsigned long len, unsigned int sector_size, unsigned int addr4b, u8 progType);
@@ -81,6 +86,9 @@ int nand_page_read(unsigned char *buf, unsigned int sector_size, u32 sector_numb
 int nand_block_read(unsigned char *buf, unsigned int page_size, u32 block_number, unsigned int pages_per_block, u8 progType);
 int nand_wait_ready(int sleep_ms);
 int nand_read_devid(u8 *rxbuf, int n_rx, u8 progType);
+int nand_load_page_to_cache(u32 page, u8 progType);
+int nand_read_cache(u8 *buf, u32 len, u8 progType);
+int nand_get_feature(u8 address, u8 *value, u8 progType);
 int nand_block_erase(unsigned int block_number, unsigned int pages_per_block, u8 progType);
 void nand_write_enable(void);
 int nand_unprotect(u8 progType);

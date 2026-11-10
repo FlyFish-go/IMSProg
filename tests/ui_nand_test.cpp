@@ -20,6 +20,7 @@ struct Fake {
     int readFailBlock = -1, readError = -1, badCheckResult = 0, eraseFailBlock = -1;
     unsigned char readbackExtra = 0;
     int opens = 0, closes = 0, configureCalls = 0, ecc = -1, bufferMode = -1;
+    int norProbes = 0;   // ProgDeviceInit calls for chip type 0 (the idle connection probe)
     int eccMode = -1;
     unsigned int eccStatus = 0, eccCorrected = 0, eccUncorrectable = 0;
     unsigned int lastErasePages = 0;
@@ -29,6 +30,7 @@ struct Fake {
     std::vector<Transfer> reads, writes, norReads;
     std::vector<unsigned int> erases;
     std::function<void()> afterRead, afterErase;
+    std::function<void(unsigned char *, u32)> corruptRead;
 } fake;
 int assertions = 0;
 void check(bool success, const char *description) {
@@ -101,6 +103,7 @@ extern "C" {
 int __wrap_ProgDeviceInit(u8 programmer, u8 chip, u16 speed) {
     checkProgrammer(programmer);
     ++fake.opens; fake.lastSpeed = speed;
+    if (chip == 0) ++fake.norProbes;
     if ((programmer == 2 || programmer == 3) && chip != 1)
         check(speed >= 468 && speed <= 60000, "CH347 SPI init/probe uses a representable clock, not I2C speed/index");
     return fake.initResult;
@@ -154,12 +157,15 @@ int __wrap_nand_block_read(unsigned char *out, unsigned int pageSize, u32 block,
     fake.reads.push_back({pageSize, block, pages, 0});
     if (static_cast<int>(block) == fake.readFailBlock) return fake.readError;
     std::memset(out, fake.erasedReads ? 0xff : 0x11 * (block + 1), pageSize * pages);
+    if (fake.badBlocks.count(block)) std::memset(out, 0x00, pageSize * pages);   // bad block, never erased
+    if (fake.corruptRead) fake.corruptRead(out, block);
     if (fake.afterRead) { auto callback = fake.afterRead; fake.afterRead = {}; callback(); }
     return 0;
 }
 int __wrap_nand_page_read(unsigned char *out, unsigned int pageSize, u32 page) {
     fake.reads.push_back({pageSize, page, 1, 0});
     std::memset(out, fake.erasedReads ? 0xff : 0x11, pageSize);
+    if (fake.badBlocks.count(page / 64)) std::memset(out, 0x00, pageSize);   // bad block left unerased
     return 0;
 }
 int __wrap_nand_block_write(unsigned char *data, unsigned int pageSize, u32 block, unsigned int pages, u8 programmer) {
@@ -173,6 +179,22 @@ int __wrap_nand_block_erase(unsigned int block, unsigned int pages, u8 programme
     fake.erases.push_back(block);
     if (fake.afterErase) { auto callback = fake.afterErase; fake.afterErase = {}; callback(); }
     return static_cast<int>(block) == fake.eraseFailBlock ? -1 : 0;
+}
+// Clock auto-tune: a cache register holding varied data; reads above
+// fake.maxStableKHz flip a bit, like a marginal connection.
+unsigned int fakeMaxStableKHz = 60000;
+int fakeCacheReads = 0;
+int __wrap_nand_load_page_to_cache(u32, u8 programmer) { checkProgrammer(programmer); return 0; }
+int __wrap_nand_read_cache(u8 *buf, u32 len, u8 programmer) {
+    checkProgrammer(programmer);
+    for (u32 i = 0; i < len; ++i) buf[i] = static_cast<u8>(i * 37 + i / 256);
+    if (fake.lastSpeed > fakeMaxStableKHz && ++fakeCacheReads % 3 == 0) buf[len / 2] ^= 0x20;
+    return 0;
+}
+int __wrap_nand_get_feature(u8 address, u8 *value, u8 programmer) {
+    checkProgrammer(programmer);
+    *value = address == 0xa0 ? 0x00 : 0x10;
+    return 0;
 }
 // Any reintroduced implicit ECC toggle is a test failure.
 void __wrap_nand_ECCEnable(u8) { check(false, "unexpected implicit ECC enable"); }
@@ -522,6 +544,57 @@ int main(int argc, char **argv) {
               "blank check follows both independent choices");
     }
 
+    // Blank check skips bad blocks, matching Erase, unless bad-block skipping is off.
+    reset(w, true, false, 3);
+    fake.erasedReads = true;
+    fake.badBlocks.insert(1);
+    w.on_actionCheck_erase_triggered();
+    check(w.lastOperationSucceeded && fake.reads.size() == 128 &&
+          w.findChild<QLabel *>("statusMessage")->text().contains("1 bad block(s) were skipped"),
+          "blank check skips a bad block that Erase left untouched and reports it");
+    reset(w, true, false, 3);
+    fake.erasedReads = true;
+    fake.badBlocks.insert(1);
+    w.nandSettings = 0x10;
+    w.on_actionCheck_erase_triggered();
+    check(!w.lastOperationSucceeded, "blank check still fails on a bad block when bad-block skipping is off");
+
+    // Verify skips bad blocks too and lists them.
+    reset(w, true, false, 3);
+    setImage(w);
+    std::memset(w.chipData.data() + 135168, 0xff, 135168);   // image has FF where the chip has a bad block
+    w.hexEdit->setData(w.chipData);
+    fake.badBlocks.insert(1);
+    dialogs.clear();
+    w.on_actionVerify_triggered();
+    check(w.lastOperationSucceeded && fake.reads.size() == 2 && !dialogs.isEmpty() &&
+          dialogs.last().contains("1 bad block(s) were skipped"),
+          "verify skips a bad block and reports it instead of a write error");
+
+    // A main + OOB image whose own marker byte is not FF was written like any
+    // other block, so a "bad" reading must not hide a real difference.
+    reset(w, true, false, 3);
+    setImage(w);
+    fake.badBlocks.insert(1);   // the fake chip returns 00 there, the image holds 22
+    dialogs.clear();
+    w.on_actionVerify_triggered();
+    check(!w.lastOperationSucceeded && !dialogs.join(" ").contains("bad block(s) were skipped"),
+          "verify compares a block whose image carries a non-FF marker instead of skipping it");
+
+    // Main-only Write with skipping moves the data to the next good block;
+    // Verify follows the same positions.
+    reset(w, false, false, 3);
+    setImage(w);
+    w.nandSettings = 1;
+    fake.badBlocks.insert(1);
+    fake.corruptRead = [&](unsigned char *out, u32 block) {
+        if (block == 2) std::memset(out, 0x22, 2048 * 64);   // image block 1 landed in chip block 2
+    };
+    dialogs.clear();
+    w.on_actionVerify_triggered();
+    check(w.lastOperationSucceeded && !dialogs.isEmpty() && dialogs.last().contains("did not fit on the chip"),
+          "verify follows main-only bad-block compaction and reports the unwritten tail");
+
     reset(w, true, true);
     w.on_actionWrite_triggered();
     check(fake.opens == 0 && fake.writes.empty(), "Main+OOB ECC-on write blocked before opening hardware");
@@ -750,6 +823,114 @@ int main(int argc, char **argv) {
     choose(w, "comboBox_type", 6);
     check(!combo(w, "comboBox_raw")->isHidden() && !combo(w, "comboBox_onDieEcc")->isHidden(),
           "both NAND selectors return when NAND is selected");
+
+    // Verified read: two passes, lower clocks for blocks that differ, majority vote last.
+    {
+        auto *action = w.findChild<QAction *>("actionReadVerify");
+        check(action && w.findChild<QMenu *>("menuProgrammer")->actions().contains(action) &&
+              w.findChild<QToolBar *>("mainToolBar")->actions().contains(action), "verified read is in the Chip menu and on the toolbar");
+        auto prepare = [&] {
+            reset(w, false, false, 4);
+            w.on_actionCH347T_triggered();
+            w.spiClockChoice = 0; setSpiClockOverride(0); w.currentDelay = 0;
+            dialogs.clear();
+        };
+        auto imageIsClean = [&] {
+            if (w.chipData.size() != 4 * 131072) return false;
+            for (int i = 0; i < w.chipData.size(); ++i)
+                if (static_cast<unsigned char>(w.chipData[i]) != 0x11 * (i / 131072 + 1)) return false;
+            return true;
+        };
+        prepare();
+        w.readAndVerify();
+        check(fake.reads.size() == 8 && fake.opens == 1 && fake.lastSpeed == 60000,
+              "verified read: a stable chip is read exactly twice at the selected clock");
+        check(imageIsClean() && !w.nandReadIncomplete && !dialogs.isEmpty() && dialogs.last().contains("identical"),
+              "verified read: stable chip gives the image and reports identical reads");
+
+        prepare();
+        int flips = 0;
+        fake.corruptRead = [&](unsigned char *out, u32 block) {
+            if (block == 2 && fake.lastSpeed > 15000) out[100 + flips++ % 50] ^= 0x01;
+        };
+        w.readAndVerify();
+        check(fake.reads.size() == 8 + 2 + 2 && fake.lastSpeed == 15000,
+              "verified read: only the differing block is re-read, at 30 then 15 MHz");
+        check(imageIsClean() && dialogs.last().contains("down to 15 MHz"),
+              "verified read: block that agrees at a lower clock is used and the clock is reported");
+
+        prepare();
+        int count = 0;
+        fake.corruptRead = [&](unsigned char *out, u32 block) {
+            if (block == 1 && count++ % 2) out[7] ^= 0x04;   // a weak bit that never settles
+        };
+        w.readAndVerify();
+        check(fake.reads.size() == 8 + 5 * 2 + 7 && fake.lastSpeed == 1875,
+              "verified read: an unstable block goes down to 1.875 MHz and is read 7 more times");
+        check(imageIsClean() && dialogs.last().contains("1 unstable bit(s), 1 of them nearly tied"),
+              "verified read: majority vote restores the bit and reports it");
+        check(action->isEnabled(), "verified read action is re-enabled afterwards");
+    }
+
+    // Clock auto-tune picks the fastest clock that reads back identically.
+    {
+        reset(w, false, false, 4);
+        w.on_actionCH347T_triggered();
+        w.spiClockChoice = MainWindow::kClockAutoTune; w.tunedClock = 0; w.tunedKey.clear();
+        w.applySpiClockChoice(); w.currentDelay = 0;
+        fakeMaxStableKHz = 15000;
+        w.on_pushButton_clicked();
+        check(w.tunedClock == 15000 && fake.lastSpeed == 15000,
+              "auto-tune: chip unstable above 15 MHz is read at 15 MHz");
+        const size_t readsAfterFirst = fake.reads.size();
+        const int opensAfterFirst = fake.opens;
+        w.on_pushButton_clicked();
+        check(w.tunedClock == 15000 && fake.reads.size() == readsAfterFirst + 4 && fake.opens == opensAfterFirst + 1,
+              "auto-tune: the measurement is reused for the same chip");
+        fakeMaxStableKHz = 60000;
+        w.tunedClock = 0; w.tunedKey.clear(); w.applySpiClockChoice();
+        w.on_pushButton_clicked();
+        check(w.tunedClock == 60000 && fake.lastSpeed == 60000, "auto-tune: a stable chip gets 60 MHz");
+        // The connection-probe timer must not fire during the measurement
+        // (it reopens and closes the programmer), and must run again afterwards.
+        w.tunedClock = 0; w.tunedKey.clear(); w.applySpiClockChoice();
+        w.timer->start(1);
+        const int probesBefore = fake.norProbes;
+        check(w.ensureClockTuned() && w.tunedClock == 60000 && fake.norProbes == probesBefore && w.timer->isActive(),
+              "auto-tune: the connection probe is paused while measuring and resumed afterwards");
+        w.timer->stop();
+        w.timer->setInterval(2000);
+        w.spiClockChoice = 0; w.tunedClock = 0; w.tunedKey.clear(); w.applySpiClockChoice();
+    }
+
+    // Verify re-reads a mismatching block at lower clocks before reporting it.
+    {
+        reset(w, false, false, 4);
+        w.on_actionCH347T_triggered();
+        w.spiClockChoice = 0; setSpiClockOverride(0); w.currentDelay = 0;
+        setImage(w);
+        dialogs.clear();
+        fake.corruptRead = [&](unsigned char *out, u32 block) {
+            if (block == 1 && fake.lastSpeed > 15000) out[33] ^= 0x10;
+        };
+        w.on_actionVerify_triggered();
+        check(w.lastOperationSucceeded && fake.lastSpeed == 15000 && fake.reads.size() == 4 + 2,
+              "verify: read error at a fast clock is re-checked at lower clocks and passes");
+        check(!dialogs.isEmpty() && dialogs.last().contains("matched the buffer at 15 MHz"),
+              "verify: success message names the clock that worked");
+
+        reset(w, false, false, 4);
+        w.on_actionCH347T_triggered();
+        w.spiClockChoice = 0; setSpiClockOverride(0); w.currentDelay = 0;
+        setImage(w);
+        dialogs.clear();
+        fake.corruptRead = [&](unsigned char *out, u32 block) { if (block == 2) out[5] ^= 0x01; };
+        w.on_actionVerify_triggered();
+        check(!w.lastOperationSucceeded && fake.lastSpeed == 1875 && fake.reads.size() == 3 + 5,
+              "verify: a real write error is still reported after re-reading down to 1.875 MHz");
+        check(!dialogs.isEmpty() && dialogs.last().contains("real write error"),
+              "verify: error message says the difference is real");
+    }
 
     if (argc > 2) {
         reset(w, true, false);

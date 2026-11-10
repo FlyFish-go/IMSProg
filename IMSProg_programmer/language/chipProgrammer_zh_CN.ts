@@ -1295,6 +1295,14 @@ Check the board documentation.</source>
 <context>
     <name>MainWindow</name>
     <message>
+        <source>%1, %2 left</source>
+        <translation>%1，剩余 %2</translation>
+    </message>
+    <message>
+        <source>Done: %1 in %2, average %3</source>
+        <translation>完成：%1，用时 %2，平均 %3</translation>
+    </message>
+    <message>
         <location filename="../mainwindow.ui" line="1059"/>
         <source>File</source>
         <translation>文件</translation>
@@ -1937,8 +1945,8 @@ Only continue if the target uses its own (host) ECC. Continue?</source>
     </message>
     <message>
         <location filename="../mainwindow.cpp" line="3566"/>
-        <source>IMSProg 1.9.3 - CH341A/B, CH347T/F SPI Programmer</source>
-        <translation>IMSProg 1.9.3 - CH341A/B、CH347T/F SPI 编程器</translation>
+        <source>IMSProg 1.9.4 - CH341A/B, CH347T/F SPI Programmer</source>
+        <translation>IMSProg 1.9.4 - CH341A/B、CH347T/F SPI 编程器</translation>
     </message>
     <message>
         <location filename="../mainwindow.cpp" line="3599"/>
@@ -2826,6 +2834,182 @@ Off: raw read. Use Off for chips written by a host controller with its own ECC (
         <location filename="../mainwindow.cpp" line="283"/>
         <source>Complete the update in the updater window, then restart IMSProg to load the updated chip database.</source>
         <translation>请在更新程序窗口中完成更新，然后重启 IMSProg 以加载更新后的芯片数据库。</translation>
+    </message>
+    <message>
+        <source>Verified read (read twice)</source>
+        <translation>校验读取（读两次比对）</translation>
+    </message>
+    <message>
+        <source>Read the chip twice and compare. Blocks that differ are re-read at lower clocks; blocks that never agree are set by majority vote.</source>
+        <translation>整片读两次并比对。不一致的块降速重读；始终不一致的块按多次读取逐位多数表决。</translation>
+    </message>
+    <message>
+        <source>Verified read</source>
+        <translation>校验读取</translation>
+    </message>
+    <message>
+        <source>Verified read complete</source>
+        <translation>校验读取完成</translation>
+    </message>
+    <message>
+        <source>The chip is too large for a verified read.</source>
+        <translation>芯片容量太大，无法进行校验读取。</translation>
+    </message>
+    <message>
+        <source>Not enough memory for two copies of the chip.</source>
+        <translation>内存不足，无法保存两份芯片数据。</translation>
+    </message>
+    <message>
+        <source>Verified read: pass 1 of 2 at %1 from %2</source>
+        <translation>校验读取：第 1/2 遍，%1，读取 %2</translation>
+    </message>
+    <message>
+        <source>Verified read: pass 2 of 2 at %1 from %2</source>
+        <translation>校验读取：第 2/2 遍，%1，读取 %2</translation>
+    </message>
+    <message>
+        <source>Verified read: re-reading %1 differing block(s) at %2</source>
+        <translation>校验读取：以 %2 重读 %1 个不一致的块</translation>
+    </message>
+    <message>
+        <source>Verified read: %1 block(s) still differ at %2, reading each %3 times for a majority vote</source>
+        <translation>校验读取：%1 个块在 %2 下仍不一致，每块再读 %3 次做多数表决</translation>
+    </message>
+    <message>
+        <source>block(s)</source>
+        <translation>个块</translation>
+    </message>
+    <message>
+        <source>segment(s)</source>
+        <translation>个数据段</translation>
+    </message>
+    <message>
+        <source>Both reads are identical at %1.</source>
+        <translation>%1 下两次读取完全一致。</translation>
+    </message>
+    <message>
+        <source>Verified read OK: 2 identical reads at %1, CRC32 %2, %3</source>
+        <translation>校验读取通过：%1 下两次一致，CRC32 %2，用时 %3</translation>
+    </message>
+    <message>
+        <source>The two reads at %1 differed in %2 of %3 %4.</source>
+        <translation>%1 下两次读取在 %3 %4中有 %2 处不一致。</translation>
+    </message>
+    <message>
+        <source>%1 of them read identically twice after lowering the clock (down to %2); those reads were used. Read this chip at %2 or lower next time.</source>
+        <translation>其中 %1 个在降速后（最低到 %2）两次读取一致，已采用降速后的数据。以后建议用 %2 或更低速度读这颗芯片。</translation>
+    </message>
+    <message>
+        <source>%1 %2 still differed at %3. Each was read %4 more times and every bit was set by majority vote: %5 unstable bit(s), %6 of them nearly tied (3:4).</source>
+        <translation>仍有 %1 %2在 %3 下不一致。已对每个再读 %4 次并逐位多数表决：不稳定的位共 %5 个，其中 %6 个票数接近（3:4）。</translation>
+    </message>
+    <message>
+        <source>Affected: %1</source>
+        <translation>涉及：%1</translation>
+    </message>
+    <message>
+        <source>With on-die ECC Off this is usually weak cells in the chip, not the connection. The chip's ECC corrects such single-bit errors; read with ECC On to see the corrected data.</source>
+        <translation>片内 ECC 关闭时，这通常是芯片本身的弱位，而不是接线问题。芯片的 ECC 会纠正这类单 bit 错误；如需看到纠正后的数据，请用 ECC 开启方式读取。</translation>
+    </message>
+    <message>
+        <source>Check the wiring, clip contact and power supply, then read again.</source>
+        <translation>请检查接线、夹子接触和供电后重新读取。</translation>
+    </message>
+    <message>
+        <source>Verified read: %1 differing %2 resolved, CRC32 %3, %4</source>
+        <translation>校验读取完成：已处理 %1 %2不一致，CRC32 %3，用时 %4</translation>
+    </message>
+    <message>
+        <source>Verify: block %1 differs, re-reading at %2</source>
+        <translation>校验：块 %1 不一致，正在以 %2 重读确认</translation>
+    </message>
+    <message>
+        <source>The block was re-read down to %1 and still differs, so this is a real write error, not a read error.</source>
+        <translation>已降速到 %1 重读，仍然不一致，说明是真的写入错误，不是读取误差。</translation>
+    </message>
+    <message>
+        <source>%1 block(s) read differently at %2 but matched the buffer at %3. The data on the chip is correct; %2 is too fast for reading this chip. Use %3 or lower next time.</source>
+        <translation>有 %1 个块在 %2 下读出来不一致，降到 %3 后与缓冲区一致。芯片里的数据是正确的，只是 %2 对这颗芯片读取太快。以后请用 %3 或更低速度。</translation>
+    </message>
+    <message>
+        <source>Verify OK after lowering the clock to %1</source>
+        <translation>降速到 %1 后校验通过</translation>
+    </message>
+    <message>
+        <source>Auto-tune (measure this chip)</source>
+        <translation>自动测速（按芯片实测）</translation>
+    </message>
+    <message>
+        <source>auto-tune</source>
+        <translation>自动测速</translation>
+    </message>
+    <message>
+        <source>Auto-tune: measuring the fastest reliable clock for this chip...</source>
+        <translation>自动测速：正在测量这颗芯片能稳定工作的最高速度……</translation>
+    </message>
+    <message>
+        <source>Auto-tune</source>
+        <translation>自动测速</translation>
+    </message>
+    <message>
+        <source>Clock measurement failed: %1</source>
+        <translation>测速失败：%1</translation>
+    </message>
+    <message>
+        <source>Auto-tune: %1 (%2)</source>
+        <translation>自动测速：%1（%2）</translation>
+    </message>
+    <message>
+        <source>the programmer is not connected</source>
+        <translation>编程器未连接</translation>
+    </message>
+    <message>
+        <source>the chip does not answer</source>
+        <translation>芯片无响应</translation>
+    </message>
+    <message>
+        <source>page read failed</source>
+        <translation>页读取失败</translation>
+    </message>
+    <message>
+        <source>reads differ even at %1; check the wiring</source>
+        <translation>在 %1 下读取仍不一致，请检查接线</translation>
+    </message>
+    <message>
+        <source>Auto-tune: testing %1...</source>
+        <translation>自动测速：正在测试 %1……</translation>
+    </message>
+    <message>
+        <source>%1 MB re-read without errors</source>
+        <translation>反复读取 %1 MB 无错误</translation>
+    </message>
+    <message>
+        <source>; failed at %1</source>
+        <translation>；%1 未通过</translation>
+    </message>
+    <message>
+        <source>Bad-block check failed. Erase check stopped.</source>
+        <translation>坏块检查失败，查空已停止。</translation>
+    </message>
+    <message>
+        <source>Erase check passed. %1 bad block(s) were skipped, as Erase leaves them untouched: %2</source>
+        <translation>查空通过。已跳过 %1 个坏块（擦除时也不会擦它们）：%2</translation>
+    </message>
+    <message>
+        <source>Bad-block check failed. Verify stopped.</source>
+        <translation>坏块检查失败，校验已停止。</translation>
+    </message>
+    <message>
+        <source>%1 bad block(s) were skipped (Erase/Write leave them untouched): %2</source>
+        <translation>已跳过 %1 个坏块（擦除和写入都不会动它们）：%2</translation>
+    </message>
+    <message>
+        <source>The data was moved past them, so the last %1 block(s) of the image did not fit on the chip and were not compared.</source>
+        <translation>数据已顺延写到坏块之后，因此镜像末尾的 %1 个块没有写入芯片，也未参与比对。</translation>
+    </message>
+    <message>
+        <source>The buffer is smaller than the chip. Reload the image or select the chip again.</source>
+        <translation>缓冲区比芯片容量小。请重新载入镜像，或重新选择芯片。</translation>
     </message>
 </context>
 <context>

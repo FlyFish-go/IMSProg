@@ -26,6 +26,12 @@
 #include "types.h"
 #include "timer.h"
 
+void (*imsprog_progress_hook)(void) = NULL;
+static void progress_tick(void)
+{
+    if (imsprog_progress_hook) imsprog_progress_hook();
+}
+
 #define min(a,b) (((a)<(b))?(a):(b))
 
 /******************************************************************************
@@ -392,7 +398,7 @@ int snor_read_param(unsigned char *buf, unsigned long from, unsigned long len, u
     //addr4bit transforming
     algType = (addr4b & 0xf0) >> 4;
     addr4b = addr4b & 0x0f;
-    uint8_t *ptr = spi_buf.obuf;
+    uint8_t *ptr;
 
     snor_dbg("%s: from:%x len:%x \n", __func__, from, len);
 
@@ -419,7 +425,8 @@ int snor_read_param(unsigned char *buf, unsigned long from, unsigned long len, u
 
         SPI_CONTROLLER_Chip_Select_Low(programmerType);
 
-        /* Set up the write data buffer. */
+        /* Set up the write data buffer (from its start for every sector). */
+        ptr = spi_buf.obuf;
         *ptr++ = OPCODE_READ;
         if (addr4b) *ptr++ = (physical_read_addr >> 24) & 0xff;
         *ptr++ = (physical_read_addr >> 16) & 0xff;
@@ -510,6 +517,7 @@ int snor_write_param(unsigned char *buf, unsigned long to, unsigned long len, un
         len -= page_size;
         to += page_size;
         buf += page_size;
+        progress_tick();
     }
 
     if (addr4b) snor_4byte_mode(0);
@@ -981,13 +989,58 @@ static unsigned int nand_ecc_corrected_pages = 0;
 static unsigned int nand_ecc_uncorrectable_pages = 0;
 static u32 nand_ecc_bad_page_list[NAND_ECC_MAX_RECORDED_PAGES];
 
+/* Largest short read sent as one full-duplex exchange (feature reads, IDs). */
+#define NAND_FULL_DUPLEX_MAX 16
+
+static u8 *nand_tx_buffer;
+static u32 nand_tx_capacity;
+
 static int nand_transfer(u8 *command, u32 command_size, u8 *tx, u32 tx_size,
                          u8 *rx, u32 rx_size)
 {
-    int ret = SPI_CONTROLLER_Chip_Select_Low(programmerType);
-    int cleanup;
+    int ret, cleanup;
+    u8 *out = command;
+    u32 out_size = command_size;
+
+    if (rx_size && !tx_size && command_size + rx_size <= NAND_FULL_DUPLEX_MAX &&
+        SPI_CONTROLLER_Has_Full_Duplex(programmerType)) {
+        /* Command and response in one exchange: halves the USB round trips
+         * of every status poll. */
+        u8 frame[NAND_FULL_DUPLEX_MAX];
+        memcpy(frame, command, command_size);
+        memset(frame + command_size, 0, rx_size);
+        ret = SPI_CONTROLLER_Chip_Select_Low(programmerType);
+        if (!ret)
+            ret = SPI_CONTROLLER_Full_Duplex(frame, command_size + rx_size, programmerType);
+        cleanup = SPI_CONTROLLER_Chip_Select_High(programmerType);
+        ret = ret ? ret : cleanup;
+        if (!ret) memcpy(rx, frame + command_size, rx_size);
+        return ret > 0 ? NAND_ERROR_TRANSPORT : ret;
+    }
+
+    if (tx_size) {
+        /* Send command and payload as one write. The bus sees the same bytes
+         * under one chip select, but the programmer gets one request less. */
+        u32 need = command_size + tx_size;
+        if (need > nand_tx_capacity) {
+            u8 *grown = (u8 *)realloc(nand_tx_buffer, need);
+            if (grown) {
+                nand_tx_buffer = grown;
+                nand_tx_capacity = need;
+            }
+        }
+        if (need <= nand_tx_capacity) {
+            memcpy(nand_tx_buffer, command, command_size);
+            memcpy(nand_tx_buffer + command_size, tx, tx_size);
+            out = nand_tx_buffer;
+            out_size = need;
+            tx_size = 0;
+        }
+    }
+
+    ret = SPI_CONTROLLER_Chip_Select_Low(programmerType);
     if (!ret)
-        ret = SPI_CONTROLLER_Write_NByte(command, command_size,
+        ret = SPI_CONTROLLER_Write_NByte(out, out_size,
                                          SPI_CONTROLLER_SPEED_SINGLE, programmerType);
     if (!ret && tx_size)
         ret = SPI_CONTROLLER_Write_NByte(tx, tx_size,
@@ -1033,9 +1086,11 @@ static int nand_wait_ready_status(int timeout_ms, u8 *status)
     u8 sr;
     int ret;
     if (timeout_ms < 0) return NAND_ERROR_INVALID_ARGUMENT;
-    /* Poll every 500 microseconds. Include a final sample at the deadline.
-     * The old loop multiplied milliseconds by 1000, waiting 500x too long. */
-    polls = (uint64_t)timeout_ms * 2 + 1;
+    /* Poll every 100 microseconds (plus the USB round trip of each status
+     * read), so the timeout is never shorter than requested. Include a final
+     * sample at the deadline. tPROG is typically 200-700 us, so a coarse
+     * interval would add most of a poll period to every page. */
+    polls = (uint64_t)timeout_ms * 10 + 1;
     for (count = 0; count < polls; ++count) {
         ret = nand_read_feature(0xc0, &sr);
         if (ret) return ret;
@@ -1043,7 +1098,7 @@ static int nand_wait_ready_status(int timeout_ms, u8 *status)
             if (status) *status = sr;
             return 0;
         }
-        if (count + 1 < polls) imsprog_usleep(500);
+        if (count + 1 < polls) imsprog_usleep(100);
     }
     return NAND_ERROR_TIMEOUT;
 }
@@ -1182,7 +1237,19 @@ int nand_configure_ecc(u8 progType, int enable, int require_buffer_mode, u8 *rea
     return 0;
 }
 
+/* prewait: poll for ready before issuing the command. Block loops skip it
+ * for pages after the first, because the previous page already ended with a
+ * successful ready poll and nothing else touched the chip in between. */
+static int nand_page_read_impl(unsigned char *buf, unsigned int page_size,
+                               uint32_t sector_number, int prewait);
+
 int nand_page_read(unsigned char *buf, unsigned int page_size, uint32_t sector_number)
+{
+    return nand_page_read_impl(buf, page_size, sector_number, 1);
+}
+
+static int nand_page_read_impl(unsigned char *buf, unsigned int page_size,
+                               uint32_t sector_number, int prewait)
 {
     u8 command[] = {0x13, (u8)(sector_number >> 16),
                    (u8)(sector_number >> 8), (u8)sector_number};
@@ -1190,8 +1257,10 @@ int nand_page_read(unsigned char *buf, unsigned int page_size, uint32_t sector_n
     int ret;
     if (!buf || !page_size || sector_number > 0xffffffu)
         return NAND_ERROR_INVALID_ARGUMENT;
-    ret = nand_wait_ready(100);
-    if (ret) return ret;
+    if (prewait) {
+        ret = nand_wait_ready(100);
+        if (ret) return ret;
+    }
     ret = nand_transfer(command, sizeof(command), NULL, 0, NULL, 0);
     if (ret) return ret;
     ret = nand_wait_ready_status(100, &sr);
@@ -1223,6 +1292,37 @@ int nand_read_devid(u8 *rxbuf, int n_rx, u8 progType)
     nand_ecc_configuration_valid = 0;
     if (!rxbuf || n_rx <= 0) return NAND_ERROR_INVALID_ARGUMENT;
     return nand_transfer(command, sizeof(command), NULL, 0, rxbuf, (u32)n_rx);
+}
+
+/* Read-only helpers for clock auto-tuning. One PAGE READ loads a page into
+ * the cache register; reading the cache again and again returns the same
+ * bytes, so any difference is a transfer error and never a weak NAND cell. */
+int nand_load_page_to_cache(u32 page, u8 progType)
+{
+    u8 command[] = {0x13, (u8)(page >> 16), (u8)(page >> 8), (u8)page};
+    int ret;
+    programmerType = progType;
+    if (page > 0xffffffu) return NAND_ERROR_INVALID_ARGUMENT;
+    ret = nand_wait_ready(100);
+    if (ret) return ret;
+    ret = nand_transfer(command, sizeof(command), NULL, 0, NULL, 0);
+    if (ret) return ret;
+    return nand_wait_ready(100);
+}
+
+int nand_read_cache(u8 *buf, u32 len, u8 progType)
+{
+    u8 command[] = {0x03, 0, 0, 0};
+    programmerType = progType;
+    if (!buf || !len) return NAND_ERROR_INVALID_ARGUMENT;
+    return nand_transfer(command, sizeof(command), NULL, 0, buf, len);
+}
+
+int nand_get_feature(u8 address, u8 *value, u8 progType)
+{
+    programmerType = progType;
+    if (!value) return NAND_ERROR_INVALID_ARGUMENT;
+    return nand_read_feature(address, value);
 }
 
 void nand_write_enable(void)
@@ -1281,21 +1381,32 @@ int nand_block_erase(unsigned int sector_number, unsigned int pages_per_block, u
     return (sr & NAND_SR_ERASE_FAIL) ? NAND_ERROR_ERASE_FAIL : 0;
 }
 
+static int nand_page_write_impl(unsigned char *buf, unsigned int page_size,
+                                uint32_t sector_number, int prewait);
+
 int nand_page_write(unsigned char *buf, unsigned int page_size, uint32_t sector_number)
+{
+    return nand_page_write_impl(buf, page_size, sector_number, 1);
+}
+
+static int nand_page_write_impl(unsigned char *buf, unsigned int page_size,
+                                uint32_t sector_number, int prewait)
 {
     u8 command[] = {0x02, 0, 0, 0};
     u8 sr;
     int ret;
     if (!buf || !page_size || sector_number > 0xffffffu)
         return NAND_ERROR_INVALID_ARGUMENT;
-    ret = nand_wait_ready(950);
-    if (ret) return ret;
+    if (prewait) {
+        ret = nand_wait_ready(950);
+        if (ret) return ret;
+    }
     ret = nand_write_enable_checked();
     if (ret) return ret;
     ret = nand_transfer(command, 3, buf, page_size, NULL, 0);
     if (ret) return ret;
-    ret = nand_wait_ready(200);
-    if (ret) return ret;
+    /* PROGRAM LOAD only fills the cache register and does not set BUSY,
+     * so no status poll is needed before PROGRAM EXECUTE. */
     command[0] = 0x10;
     command[1] = (u8)(sector_number >> 16);
     command[2] = (u8)(sector_number >> 8);
@@ -1325,11 +1436,20 @@ int nand_block_read(unsigned char *buf, unsigned int page_size, uint32_t block_n
     if (!nand_block_arguments_valid(buf, page_size, block_number, pages_per_block))
         return NAND_ERROR_INVALID_ARGUMENT;
     for (i = 0; i < pages_per_block; ++i) {
-        ret = nand_page_read(buf + (size_t)i * page_size, page_size,
-                             block_number * pages_per_block + i);
+        ret = nand_page_read_impl(buf + (size_t)i * page_size, page_size,
+                                  block_number * pages_per_block + i, i == 0);
         if (ret) return ret;
+        progress_tick();
     }
     return 0;
+}
+
+static int nand_page_is_blank(const unsigned char *page, unsigned int size)
+{
+    unsigned int i;
+    for (i = 0; i < size; ++i)
+        if (page[i] != 0xff) return 0;
+    return 1;
 }
 
 int nand_block_write(unsigned char *buf, unsigned int page_size, uint32_t block_number,
@@ -1340,10 +1460,23 @@ int nand_block_write(unsigned char *buf, unsigned int page_size, uint32_t block_
     programmerType = progType;
     if (!nand_block_arguments_valid(buf, page_size, block_number, pages_per_block))
         return NAND_ERROR_INVALID_ARGUMENT;
+    int written = 0;
     for (i = 0; i < pages_per_block; ++i) {
-        ret = nand_page_write(buf + (size_t)i * page_size, page_size,
-                              block_number * pages_per_block + i);
+        unsigned char *page = buf + (size_t)i * page_size;
+        /* Programming can only clear bits, so an all-FF page leaves the
+         * array unchanged: skip it. With on-die ECC this also keeps the page
+         * in the erased state instead of storing ECC bytes for blank data. */
+        if (nand_page_is_blank(page, page_size)) {
+            progress_tick();
+            continue;
+        }
+        /* Poll before the first programmed page of the block; later pages
+         * follow a page that already ended with a successful ready poll. */
+        ret = nand_page_write_impl(page, page_size,
+                                   block_number * pages_per_block + i, !written);
         if (ret) return ret;
+        written = 1;
+        progress_tick();
     }
     return 0;
 }

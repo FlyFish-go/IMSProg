@@ -19,10 +19,12 @@ static struct {
     int command_length, feature_writes, data_reads, data_writes, page_reads;
     int program_executes, erases, busy_reads, busy_after_operation;
     int always_busy, wrong_programmer, feature_reads[256];
+    int no_full_duplex, full_duplex_calls, merged_writes;
     unsigned int last_read_size, last_write_size, last_page, last_column;
     unsigned long sleep_us;
 } fake;
 static unsigned int checks;
+static int without_full_duplex;
 
 /* platform_sleep.h's Unix implementation calls this renamed usleep. */
 int fake_usleep(useconds_t usec)
@@ -90,6 +92,16 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Chip_Select_High(u8 programmer)
     return SPI_CONTROLLER_RTN_NO_ERROR;
 }
 
+static int fake_command_length(u8 opcode)
+{
+    switch (opcode) {
+    case 0x06: case 0xff: return 1;
+    case 0x0f: case 0x9f: return 2;
+    case 0x02: case 0x1f: return 3;
+    default: return 4;
+    }
+}
+
 SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Write_NByte(u8 *data, u32 len,
                                                SPI_CONTROLLER_SPEED_T speed, u8 programmer)
 {
@@ -98,9 +110,20 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Write_NByte(u8 *data, u32 len,
     ret = io_result(programmer);
     if (ret) return (SPI_CONTROLLER_RTN_T)ret;
     if (!fake.command_length) {
-        CHECK(len > 0 && len <= sizeof(fake.command));
-        memcpy(fake.command, data, len);
-        fake.command_length = (int)len;
+        int clen;
+        CHECK(len > 0);
+        clen = fake_command_length(data[0]);
+        if ((int)len > clen) {
+            /* Command and payload merged into one write. */
+            CHECK(data[0] == 0x02);
+            fake.last_write_size = len - (u32)clen;
+            ++fake.data_writes;
+            ++fake.merged_writes;
+        } else {
+            CHECK((int)len == clen);
+        }
+        memcpy(fake.command, data, (size_t)clen);
+        fake.command_length = clen;
     } else {
         CHECK(fake.command[0] == 0x02 && fake.command_length == 3);
         fake.last_write_size = len;
@@ -109,14 +132,9 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Write_NByte(u8 *data, u32 len,
     return SPI_CONTROLLER_RTN_NO_ERROR;
 }
 
-SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Read_NByte(u8 *data, u32 len,
-                                              SPI_CONTROLLER_SPEED_T speed, u8 programmer)
+static void fake_read_payload(u8 *data, u32 len)
 {
     unsigned int i;
-    int ret;
-    CHECK(fake.selected && fake.command_length && speed == SPI_CONTROLLER_SPEED_SINGLE);
-    ret = io_result(programmer);
-    if (ret) return (SPI_CONTROLLER_RTN_T)ret;
     switch (fake.command[0]) {
     case 0x0f:
         CHECK(len == 1 && fake.command_length == 2);
@@ -140,12 +158,45 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Read_NByte(u8 *data, u32 len,
         break;
     default: CHECK(0);
     }
+}
+
+SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Read_NByte(u8 *data, u32 len,
+                                              SPI_CONTROLLER_SPEED_T speed, u8 programmer)
+{
+    int ret;
+    CHECK(fake.selected && fake.command_length && speed == SPI_CONTROLLER_SPEED_SINGLE);
+    ret = io_result(programmer);
+    if (ret) return (SPI_CONTROLLER_RTN_T)ret;
+    fake_read_payload(data, len);
+    return SPI_CONTROLLER_RTN_NO_ERROR;
+}
+
+int SPI_CONTROLLER_Has_Full_Duplex(u8 programmer)
+{
+    (void)programmer;
+    return !fake.no_full_duplex;
+}
+
+SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Full_Duplex(u8 *buf, u32 len, u8 programmer)
+{
+    int ret, clen;
+    CHECK(!fake.no_full_duplex);
+    CHECK(fake.selected && !fake.command_length && len > 0);
+    ret = io_result(programmer);
+    if (ret) return (SPI_CONTROLLER_RTN_T)ret;
+    clen = fake_command_length(buf[0]);
+    CHECK((int)len > clen);
+    memcpy(fake.command, buf, (size_t)clen);
+    fake.command_length = clen;
+    ++fake.full_duplex_calls;
+    fake_read_payload(buf + clen, len - (u32)clen);
     return SPI_CONTROLLER_RTN_NO_ERROR;
 }
 
 static void reset_fake(void)
 {
     memset(&fake, 0, sizeof(fake));
+    fake.no_full_duplex = without_full_duplex;
     fake.expected_programmer = 2;
     nand_set_ecc_status_mode(NAND_ECC_STATUS_NONE);
 }
@@ -338,7 +389,8 @@ static void test_read_transport(void)
         }
     }
     prepare_ecc(0, NAND_ECC_STATUS_W25N01GW);
-    fake.busy_after_operation = 201;
+    /* 100 ms timeout at 100 us per poll: 1001 samples, all busy. */
+    fake.busy_after_operation = 1001;
     CHECK(nand_page_read(data, 2048, 0) == NAND_ERROR_TIMEOUT);
     CHECK(fake.data_reads == 0);
     check_clean_bus();
@@ -346,13 +398,15 @@ static void test_read_transport(void)
 
 static void test_identification(void)
 {
-    int at, code;
+    int at, code, count;
     u8 id[3];
     reset_fake();
     CHECK(nand_read_devid(id, 3, 2) == 0);
     CHECK(id[0] == 0xef && id[1] == 0xba && id[2] == 0x21);
+    count = fake.step; /* 3 with full duplex, 4 with separate write/read. */
+    CHECK(count == (without_full_duplex ? 4 : 3));
     for (code = 0; code < 2; ++code) {
-        for (at = 1; at <= 4; ++at) {
+        for (at = 1; at <= count; ++at) {
             reset_fake();
             fake.fail_at = at;
             fake.fail_code = code ? 1 : -8;
@@ -451,7 +505,7 @@ static void test_waits_and_badblocks(void)
     reset_trace();
     fake.always_busy = 1;
     CHECK(nand_wait_ready(1) == NAND_ERROR_TIMEOUT);
-    CHECK(fake.feature_reads[0xc0] == 3 && fake.sleep_us == 1000);
+    CHECK(fake.feature_reads[0xc0] == 11 && fake.sleep_us == 1000);
     CHECK(nand_wait_ready(-1) == NAND_ERROR_INVALID_ARGUMENT);
     check_clean_bus();
     reset_fake();
@@ -470,6 +524,45 @@ static void test_waits_and_badblocks(void)
     }
 }
 
+static void test_transfer_batching(void)
+{
+    static unsigned char data[2 * 2112];
+    u8 id[3];
+    reset_fake();
+    CHECK(nand_read_devid(id, 3, 2) == 0);
+    CHECK(fake.full_duplex_calls == (without_full_duplex ? 0 : 1));
+    CHECK(id[0] == 0xef && id[1] == 0xba && id[2] == 0x21);
+    reset_trace();
+    fake.full_duplex_calls = 0;
+    memset(fake.feature_reads, 0, sizeof(fake.feature_reads));
+    CHECK(nand_block_write(data, 2112, 0, 2, 2) == 0);
+    /* One write per page carries command and payload together. */
+    CHECK(fake.merged_writes == 2 && fake.data_writes == 2 && fake.last_write_size == 2112);
+    CHECK(fake.program_executes == 2);
+    /* Ready poll before page 0, one after each program; none before page 1. */
+    CHECK(fake.feature_reads[0xc0] == 3);
+    CHECK(fake.full_duplex_calls == (without_full_duplex ? 0 : 3));
+    reset_trace();
+    CHECK(nand_block_read(data, 2112, 0, 2, 2) == 0);
+    CHECK(fake.page_reads == 2 && fake.data_reads == 2 && fake.feature_reads[0xc0] == 3);
+    /* All-FF pages are skipped; the first programmed page still pre-waits. */
+    memset(data, 0xff, sizeof(data));
+    data[2112 + 7] = 0x00;          /* page 1 has data, page 0 is blank */
+    reset_trace();
+    CHECK(nand_block_write(data, 2112, 0, 2, 2) == 0);
+    CHECK(fake.program_executes == 1 && fake.data_writes == 1);
+    CHECK(fake.feature_reads[0xc0] == 2);
+    memset(data, 0xff, sizeof(data));
+    reset_trace();
+    CHECK(nand_block_write(data, 2112, 0, 2, 2) == 0);
+    CHECK(fake.program_executes == 0 && fake.step == 0);
+    memset(data, 0, sizeof(data));
+    reset_trace();
+    CHECK(nand_page_write(data, 2112, 5) == 0);
+    CHECK(fake.feature_reads[0xc0] == 2); /* Standalone page keeps its pre-wait. */
+    check_clean_bus();
+}
+
 int main(void)
 {
     test_configuration();
@@ -481,6 +574,12 @@ int main(void)
     test_writes_and_erases();
     test_waits_and_badblocks();
     test_unprotect_and_invalid_arguments();
+    test_transfer_batching();
+    if (!without_full_duplex) {
+        /* Repeat everything on a programmer without full-duplex support. */
+        without_full_duplex = 1;
+        return main();
+    }
     printf("PASS: NAND core fake-SPI regression (%u checked cases)\n", checks);
     return 0;
 }

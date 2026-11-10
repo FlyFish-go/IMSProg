@@ -1286,6 +1286,14 @@
 <context>
     <name>MainWindow</name>
     <message>
+        <source>%1, %2 left</source>
+        <translation>%1，剩餘 %2</translation>
+    </message>
+    <message>
+        <source>Done: %1 in %2, average %3</source>
+        <translation>完成：%1，用時 %2，平均 %3</translation>
+    </message>
+    <message>
         <location filename="../mainwindow.ui" line="1042"/>
         <source>File</source>
         <translation>檔案</translation>

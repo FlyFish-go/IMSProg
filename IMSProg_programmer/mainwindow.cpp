@@ -58,12 +58,85 @@
 #endif
 
 
+// Called by the NOR/NAND core between pages. Long NAND blocks (64 pages)
+// used to keep the event loop blocked for the whole block; pumping here at
+// ~30 ms keeps clicks, Stop and repaints responsive at negligible cost.
+static void imsprogUiPump()
+{
+    static QElapsedTimer last;
+    if (!last.isValid() || last.elapsed() >= 30) {
+        QCoreApplication::processEvents();
+        last.restart();
+    }
+}
+
+static QString formatRate(double bytesPerSecond)
+{
+    if (bytesPerSecond >= 1024.0 * 1024.0)
+        return QString::number(bytesPerSecond / (1024.0 * 1024.0), 'f', 2) + " MB/s";
+    return QString::number(bytesPerSecond / 1024.0, 'f', 1) + " KB/s";
+}
+
+static QString formatSize(quint64 bytes)
+{
+    if (bytes >= 1024ull * 1024ull)
+        return QString::number(bytes / (1024.0 * 1024.0), 'f', 2) + " MB";
+    return QString::number(bytes / 1024.0, 'f', 1) + " KB";
+}
+
+static QString formatDuration(qint64 seconds)
+{
+    if (seconds < 0) seconds = 0;
+    if (seconds >= 3600)
+        return QString("%1:%2:%3").arg(seconds / 3600).arg((seconds / 60) % 60, 2, 10, QChar('0'))
+                                  .arg(seconds % 60, 2, 10, QChar('0'));
+    return QString("%1:%2").arg(seconds / 60, 2, 10, QChar('0')).arg(seconds % 60, 2, 10, QChar('0'));
+}
+
+void MainWindow::opSpeedStart()
+{
+    opLabel = ui->statusMessage->text();
+    opLastShownMs = -1;
+    opBytesDone = 0;
+    opTimer.start();
+}
+
+void MainWindow::opSpeedUpdate(quint64 blocksDone, quint64 totalBlocks, quint64 bytesPerBlock)
+{
+    if (!opTimer.isValid() || !totalBlocks) return;
+    const qint64 ms = opTimer.elapsed();
+    opBytesDone = blocksDone * bytesPerBlock;
+    // Refresh twice per second; skip the first 300 ms while the rate settles.
+    if (ms < 300 || (opLastShownMs >= 0 && ms - opLastShownMs < 500)) return;
+    opLastShownMs = ms;
+    const double rate = opBytesDone * 1000.0 / double(ms);
+    const quint64 total = totalBlocks * bytesPerBlock;
+    const qint64 left = rate > 0 ? qint64((total - opBytesDone) / rate + 0.5) : 0;
+    ui->statusMessage->setText(opLabel + "    " +
+        tr("%1, %2 left").arg(formatRate(rate), formatDuration(left)));
+}
+
+void MainWindow::opSpeedFinish()
+{
+    if (opTimer.isValid() && opBytesDone) {
+        const qint64 ms = qMax<qint64>(opTimer.elapsed(), 1);
+        ui->statusMessage->setText(tr("Done: %1 in %2, average %3")
+            .arg(formatSize(opBytesDone), formatDuration((ms + 500) / 1000),
+                 formatRate(opBytesDone * 1000.0 / double(ms))));
+    } else {
+        ui->statusMessage->setText("");
+    }
+    opTimer.invalidate();
+    opBytesDone = 0;
+}
+
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow)
 {
  ui->setupUi(this);
  setupAppearance();
+ imsprog_progress_hook = imsprogUiPump;
 
  max_rec = 0;
  isHalted = false;
@@ -215,7 +288,7 @@ MainWindow::MainWindow(QWidget *parent) :
  }
  applyPlatformRestrictions();
  if (programmerFamily() == FamilyCH341) spiClockChoice = 0;
- setSpiClockOverride(spiClockChoice);
+ applySpiClockChoice();
  // connect and status check
  updateProgrammerMenu();
  refreshDriverStatus();
@@ -268,6 +341,23 @@ void MainWindow::setupAppearance()
     QAction *updateDatabase = new QAction(tr("Update chip database…"), this);
     updateDatabase->setObjectName("actionUpdateChipDatabase");
     ui->menuFile->insertAction(ui->actionEdit_chips_Database, updateDatabase);
+    // Read icon with a small verify badge, so the toolbar button differs from Read.
+    QPixmap readVerifyIcon(":/res/img/read64.png");
+    {
+        QPainter painter(&readVerifyIcon);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        const int badge = readVerifyIcon.width() * 11 / 20;
+        painter.drawPixmap(readVerifyIcon.width() - badge, readVerifyIcon.height() - badge, badge, badge,
+                           QPixmap(":/res/img/verify64.png"));
+    }
+    actionReadVerify = new QAction(QIcon(readVerifyIcon), tr("Verified read (read twice)"), this);
+    actionReadVerify->setObjectName("actionReadVerify");
+    actionReadVerify->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R));
+    actionReadVerify->setStatusTip(tr("Read the chip twice and compare. Blocks that differ are re-read at lower clocks; blocks that never agree are set by majority vote."));
+    ui->menuProgrammer->insertAction(ui->actionErase, actionReadVerify);
+    actionReadVerify->setToolTip(tr("Verified read (read twice)") + " (Ctrl+Shift+R)\n" + actionReadVerify->statusTip());
+    ui->mainToolBar->insertAction(ui->actionErase, actionReadVerify);
+    connect(actionReadVerify, &QAction::triggered, this, &MainWindow::readAndVerify);
     connect(updateDatabase, &QAction::triggered, this, [this] {
         if (ui->actionStop->isEnabled()) return;
 #ifdef Q_OS_WIN
@@ -298,6 +388,7 @@ void MainWindow::on_pushButton_clicked()
   bool readCompleted = false;
   uint32_t numBlocks, step, sectorsPerBlock;
   defaultSpeed = getInterfaceSpeed(current_programmer, currentChipType, currentDelay);
+  if (!ensureClockTuned()) return;
 
   if (currentChipType != 1)
   {
@@ -389,6 +480,7 @@ void MainWindow::on_pushButton_clicked()
        std::shared_ptr<uint8_t[]> buf(new uint8_t[step]);
        ui->pushButton->setStyleSheet(redKeyStyle);
        ui->statusMessage->setText(tr("Reading data from ") + ui->comboBox_name->currentText());
+       opSpeedStart();
        for (k = 0; k < numBlocks; k++)
        {
            switch (currentChipType)
@@ -458,6 +550,7 @@ void MainWindow::on_pushButton_clicked()
           curBlock++;
           qApp->processEvents();
           //ui->progressBar->setValue(static_cast<int>(curBlock));
+          opSpeedUpdate(curBlock, numBlocks, step);
           currentPercent = static_cast<int>((curBlock * 100.0) / numBlocks);
           if (currentPercent != lastPercent)
           {
@@ -485,7 +578,7 @@ void MainWindow::on_pushButton_clicked()
     hexEdit->setData(chipData);
     nandReadIncomplete = false;
     readCompleted = true;
-    ui->statusMessage->setText("");
+    opSpeedFinish();
     ui->progressBar->setValue(0);
     ui->pushButton->setStyleSheet(grnKeyStyle);
     ui->crcEdit->setText(getCRC32(chipData));
@@ -507,6 +600,9 @@ void MainWindow::on_pushButton_2_clicked()
 {
     timer->stop();
     //Detect button - searching the connected chip in database
+    tunedClock = 0;
+    tunedKey.clear();
+    applySpiClockChoice();
     u8 sr;
     statusCH341 = ProgDeviceInit(current_programmer, currentChipType,
         currentChipType == 1 ? currentI2CBusSpeed : getInterfaceSpeed(current_programmer, currentChipType, currentDelay));
@@ -610,7 +706,7 @@ void MainWindow::on_pushButton_2_clicked()
             { // -1 for not found
                ui->comboBox_vcc->setCurrentIndex(index);
             }
-            index = ui->comboBox_vcc->findData(chips[i].eepromPages);
+            index = ui->comboBox_ECC->findData(chips[i].eepromPages);
             if ( index != -1 )
             { // -1 for not found
                ui->comboBox_ECC->setCurrentIndex(index);
@@ -652,7 +748,7 @@ void MainWindow::on_pushButton_2_clicked()
                       //2112K
                       capacityIndex = 5;
                    break;
-                   case 30:
+                   case 0x30:
                       //4224K
                       capacityIndex = 6;
                    break;
@@ -841,6 +937,7 @@ void MainWindow::on_actionErase_triggered()
 {
     lastOperationSucceeded = false;
     if (!validateNandOperation(false, false)) return;
+    if (!ensureClockTuned()) return;
     if (currentChipType == 6 && QMessageBox::warning(this, tr("Erase NAND"),
             tr("This erases the whole selected NAND chip, including main data and OOB. It is not a selected-block repair. Continue?"),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
@@ -1106,6 +1203,11 @@ void MainWindow::on_actionOpen_triggered()
     }
    else fileName = lastDirectory;
    cmdStarted = false;
+    if (fileName.isEmpty())
+    {
+        ui->statusMessage->setText("");
+        return;
+    }
 
     QFileInfo info(fileName);
     uint32_t arraySize;
@@ -1132,7 +1234,6 @@ void MainWindow::on_actionOpen_triggered()
     preparingToCompare(0);
     filled = 0;
     nandReadIncomplete = false;
-    buf.resize(static_cast<int>(info.size()));
     buf = file.readAll();
     if (currentChipSize == 0)
     {
@@ -1160,9 +1261,11 @@ void MainWindow::on_actionExtract_from_ASUS_CAP_triggered()
                                 QString(tr("Open file")),
                                 lastDirectory,
                                 "ASUS Data Images (*.cap *.CAP);;All files (*.*)");
-    QFileInfo info(fileName);
     ui->statusMessage->setText("");
+    if (fileName.isEmpty()) return;
+    QFileInfo info(fileName);
     lastDirectory = info.filePath();
+    if (info.size() < 0x800) return;   // shorter than the CAP header: nothing to extract
     if ((info.size() - 0x800 > currentChipSize) && (currentChipSize != 0))
     {
       QMessageBox::about(this, tr("Error"), tr("The file size exceeds the chip size. Please select another chip or file or use `Save part` to split the file."));
@@ -1197,6 +1300,7 @@ void MainWindow::on_actionWrite_triggered()
     lastOperationSucceeded = false;
     if (!validateNandOperation(true, true)) return;
     if (!nandWriteModeConfirmed && !confirmNandWriteMode()) return;
+    if (!ensureClockTuned()) return;
     //Writting data to chip
     int res = 0, badResult = 0;
     uint32_t numBlocks, step, sectorsPerBlock;
@@ -1269,6 +1373,7 @@ void MainWindow::on_actionWrite_triggered()
     uint32_t curBlock = 0;
     uint32_t k;
     ui->statusMessage->setText(tr("Writing data to ") + ui->comboBox_name->currentText());
+    opSpeedStart();
     //progerssbar settings
     int currentPercent = 0;
     int lastPercent = -1;
@@ -1276,6 +1381,16 @@ void MainWindow::on_actionWrite_triggered()
     ui->progressBar->setValue(0);
     ui->checkBox_2->setStyleSheet("QCheckBox{font-weight:800;}");
     chipData = hexEdit->data();
+    if (currentChipType != 6 && quint64(chipData.size()) < quint64(numBlocks) * step)
+    {
+        // Bytes were removed in the editor: programming would read past the buffer.
+        QMessageBox::warning(this, tr("Error"), tr("The buffer is smaller than the chip. Reload the image or select the chip again."));
+        opSpeedFinish();
+        ProgDeviceClose(current_programmer);
+        doNotDisturbCancel();
+        clearCheckboxes();
+        return;
+    }
     std::shared_ptr<uint8_t[]> buf(new uint8_t[step]);
     for (k = 0; k < numBlocks; k++)
       {
@@ -1361,6 +1476,7 @@ void MainWindow::on_actionWrite_triggered()
              doNotDisturbCancel();
              return;
          }
+            opSpeedUpdate(curBlock, numBlocks, step);
             currentPercent = static_cast<int>((curBlock * 100.0) / numBlocks);
             if (currentPercent != lastPercent)
             {
@@ -1387,7 +1503,7 @@ void MainWindow::on_actionWrite_triggered()
     doNotDisturbCancel();
     ui->progressBar->setValue(0);
     ui->checkBox_2->setStyleSheet("");
-    ui->statusMessage->setText("");
+    opSpeedFinish();
     }
     else
     {
@@ -1530,9 +1646,19 @@ void MainWindow::on_actionVerify_triggered()
 {
     lastOperationSucceeded = false;
     if (!validateNandOperation(false, true)) return;
+    if (!ensureClockTuned()) return;
     //Reading and veryfying data from chip
     int res = 0;
     uint32_t step, numBlocks, sectorsPerBlock;
+    // A mismatch is re-checked at lower clocks before it is reported,
+    // so a marginal read clock is not mistaken for a failed write.
+    const uint16_t verifyStartClock = currentChipType != 1 ? defaultSpeed : currentI2CBusSpeed;
+    uint16_t verifyClock = verifyStartClock;
+    uint32_t verifyRereadBlocks = 0;
+    QStringList verifySkippedBadBlocks;
+    // Main-only Write with bad-block skipping writes the data of a skipped
+    // block into the next good block (see on_actionWrite_triggered()).
+    const bool verifyCompactsAfterBad = currentChipType == 6 && !nandRaw && (nandSettings & 0x0f) == 0x01;
     //statusCH341 = ProgDeviceInit(current_programmer, currentChipType, currentI2CBusSpeed);//ch341a_init(currentChipType, currentI2CBusSpeed);
 
     if (currentChipType != 1)
@@ -1608,10 +1734,51 @@ void MainWindow::on_actionVerify_triggered()
                ui->progressBar->setValue(0);
                std::shared_ptr<uint8_t[]> buf(new uint8_t[step]);
                chipData = hexEdit->data();
+               if (currentChipType != 6 && quint64(chipData.size()) < quint64(numBlocks) * step)
+               {
+                   // Bytes were removed in the editor: comparing would read past the buffer.
+                   QMessageBox::warning(this, tr("Error"), tr("The buffer is smaller than the chip. Reload the image or select the chip again."));
+                   ui->checkBox_3->setStyleSheet("");
+                   ProgDeviceClose(current_programmer);
+                   doNotDisturbCancel();
+                   clearCheckboxes();
+                   return;
+               }
                ui->checkBox_3->setStyleSheet("QCheckBox{font-weight:800;}");
                ui->statusMessage->setText(tr("Veryfing data from ") + ui->comboBox_name->currentText());
+               opSpeedStart();
                for (k = 0; k < numBlocks; k++)
                {
+                   // Blocks marked bad are left alone by Erase (and by Write when
+                   // skipping is on), so their contents cannot match the image.
+                   if (currentChipType == 6 && sectorsPerBlock &&
+                       ((nandSettings & 0xf0) == 0x00 || (nandSettings & 0x0f) == 0x01))
+                   {
+                       const int bad = nand_checkBadBlock(k, currentPageSize, sectorsPerBlock, current_programmer);
+                       if (bad < 0)
+                       {
+                           QMessageBox::warning(this, tr("Error"), tr("Bad-block check failed. Verify stopped."));
+                           ui->checkBox_3->setStyleSheet("");
+                           ProgDeviceClose(current_programmer);
+                           doNotDisturbCancel();
+                           clearCheckboxes();
+                           return;
+                       }
+                       // A main + OOB image that itself carries a non-FF marker for
+                       // this block (host ECC layouts keep data there) was written
+                       // like any other block, so it is compared, not skipped.
+                       const bool imageUsesMarker = nandRaw &&
+                           static_cast<uint8_t>(chipData.at(static_cast<int>(addr + currentPageSize))) != 0xff;
+                       if (bad == 1 && !imageUsesMarker)
+                       {
+                           verifySkippedBadBlocks << QString::number(k);
+                           // Main-only Write with skipping moves the data to the
+                           // next good block, so the image position stays put.
+                           if (!verifyCompactsAfterBad) addr = addr + step;
+                           curBlock++;
+                           continue;
+                       }
+                   }
                    switch (currentChipType)
                       {
                       case 0:
@@ -1674,20 +1841,59 @@ void MainWindow::on_actionVerify_triggered()
                         clearCheckboxes();
                         return;
                     }
-                    for (j = 0; j < step; j++)
                     {
-                      if (chipData[addr + j] != char(buf[addr + j - k * step]))
+                      const uint8_t *expected = reinterpret_cast<const uint8_t *>(chipData.constData()) + addr;
+                      auto firstDifference = [&]() -> uint32_t {
+                          for (uint32_t n = 0; n < step; n++) if (expected[n] != buf[n]) return n;
+                          return step;
+                      };
+                      j = firstDifference();
+                      if (j < step)
+                      {
+                          const QVector<uint16_t> lower = verifiedReadSpeeds(verifyClock);
+                          for (int si = 1; si < lower.size() && j < step; ++si)
                           {
+                              ProgDeviceClose(current_programmer);
+                              if (!openForVerifiedRead(lower[si], tr("Verify")))
+                              {
+                                  ui->checkBox_3->setStyleSheet("");
+                                  doNotDisturbCancel();
+                                  clearCheckboxes();
+                                  return;
+                              }
+                              verifyClock = lower[si];
+                              ui->statusMessage->setText(tr("Verify: block %1 differs, re-reading at %2").arg(k).arg(formatClock(verifyClock)));
+                              qApp->processEvents();
+                              res = readChipUnit(buf.get(), k, step, sectorsPerBlock);
+                              if (statusCH341 != 0 || res <= 0)
+                              {
+                                  if (statusCH341 != 0) showConnectionError();
+                                  else QMessageBox::about(this, tr("Error"), tr("Error reading block ") + QString::number(curBlock));
+                                  ProgDeviceClose(current_programmer);
+                                  ui->checkBox_3->setStyleSheet("");
+                                  doNotDisturbCancel();
+                                  clearCheckboxes();
+                                  return;
+                              }
+                              j = firstDifference();
+                          }
+                          if (j == step) ++verifyRereadBlocks;   // read error, data is correct
+                      }
+                      if (j < step)
+                      {
                             //error compare
-                            QMessageBox::about(this, tr("Error"), tr("Error comparing data!\nAddress:   ") + hexiAddr(addr + j) + tr("\nBuffer: ") + bytePrint( static_cast<unsigned char>(chipData[addr + j])) + tr("    Chip: ") + bytePrint(buf[addr + j - k * step]));
+                            QString message = tr("Error comparing data!\nAddress:   ") + hexiAddr(addr + j) + tr("\nBuffer: ") + bytePrint(expected[j]) + tr("    Chip: ") + bytePrint(buf[j]);
+                            if (verifyClock != verifyStartClock)
+                                message += "\n\n" + tr("The block was re-read down to %1 and still differs, so this is a real write error, not a read error.").arg(formatClock(verifyClock));
+                            QMessageBox::about(this, tr("Error"), message);
                             ui->statusMessage->setText("");
                             ui->checkBox_3->setStyleSheet("");
                             ProgDeviceClose(current_programmer);
                             doNotDisturbCancel();
                             clearCheckboxes();
                             return;
-                           }
-                     }
+                      }
+                    }
                      addr = addr + step;
                      curBlock++;
                      qApp->processEvents();
@@ -1698,6 +1904,7 @@ void MainWindow::on_actionVerify_triggered()
                          doNotDisturbCancel();
                          return;
                      }
+                     opSpeedUpdate(curBlock, numBlocks, step);
                      currentPercent = static_cast<int>((curBlock * 100.0) / numBlocks);
                      if (currentPercent != lastPercent)
                      {
@@ -1709,19 +1916,42 @@ void MainWindow::on_actionVerify_triggered()
              else
              {
                 //Not correct Number fnd size of blocks
-               if (currentChipType == 0) QMessageBox::about(this, tr("Error"), tr("Before reading from chip please press 'Detect' button."));
-               if (currentChipType == 1) QMessageBox::about(this, tr("Error"), tr("Please select the chip parameters - manufacture and chip name."));
-
+               // Nothing was read, so this must not end as a successful operation.
+               if ((currentChipType == 0) || (currentChipType > 4)) QMessageBox::about(this, tr("Error"), tr("Before reading from chip please press 'Detect' button."));
+               else QMessageBox::about(this, tr("Error"), tr("Please select the chip parameters - manufacture and chip name."));
+               ProgDeviceClose(current_programmer);
+               clearCheckboxes();
+               return;
              }
              doNotDisturbCancel();
-             ui->statusMessage->setText("");
+             opSpeedFinish();
              ui->progressBar->setValue(0);
              ui->checkBox_3->setStyleSheet("");
              ui->crcEdit->setText(getCRC32(chipData));
              ProgDeviceClose(current_programmer);
              lastOperationSucceeded = true;
              finishNandRead(tr("Verify complete"));
-             QMessageBox::about(this, tr("Ok!"), tr("The operation was successful!"));
+             QString badNote;
+             if (!verifySkippedBadBlocks.isEmpty())
+             {
+                 badNote = "\n\n" + tr("%1 bad block(s) were skipped (Erase/Write leave them untouched): %2")
+                                          .arg(verifySkippedBadBlocks.size()).arg(verifySkippedBadBlocks.join(", "));
+                 if (verifyCompactsAfterBad)
+                     badNote += "\n" + tr("The data was moved past them, so the last %1 block(s) of the image did not fit on the chip and were not compared.")
+                                          .arg(verifySkippedBadBlocks.size());
+             }
+             if (verifyRereadBlocks || !badNote.isEmpty())
+             {
+                 QString note;
+                 if (verifyRereadBlocks)
+                 {
+                     note = "\n\n" + tr("%1 block(s) read differently at %2 but matched the buffer at %3. The data on the chip is correct; %2 is too fast for reading this chip. Use %3 or lower next time.")
+                                          .arg(verifyRereadBlocks).arg(formatClock(verifyStartClock)).arg(formatClock(verifyClock));
+                     ui->statusMessage->setText(tr("Verify OK after lowering the clock to %1").arg(formatClock(verifyClock)));
+                 }
+                 QMessageBox::information(this, tr("Ok!"), tr("The operation was successful!") + note + badNote);
+             }
+             else QMessageBox::about(this, tr("Ok!"), tr("The operation was successful!"));
     }
       else
       {
@@ -1756,7 +1986,7 @@ void MainWindow::on_pushButton_3_clicked()
 
 void MainWindow::receiveAddr(QString addressData)
 {
-    uint32_t ee, blockEndAddr = 0;
+    uint32_t blockEndAddr = 0;
     int e,t;
     QString endType;
     e = addressData.indexOf("-");
@@ -1773,29 +2003,26 @@ void MainWindow::receiveAddr(QString addressData)
             QMessageBox::about(this, tr("Error"), tr("The end address must be greater than the starting address."));
             return;
         }
-        if (static_cast<int>(blockEndAddr) > hexEdit->data().length())
-        {
-           QMessageBox::about(this, tr("Error"), tr("The ending address must not exceed the buffer size."));
-           return;
-        }
         blockLen = blockEndAddr - blockStartAddr + 1;
     }
     else blockLen = hexToInt(addressData.mid(e + 1, t - e - 2));
-    block.resize(static_cast<int>(blockLen));
     chipData = hexEdit->data();
-    for (ee = 0; ee < blockLen; ee++)
+    if (quint64(blockStartAddr) + blockLen > quint64(chipData.size()))
     {
-        block[ee] = chipData[ee + blockStartAddr];
+       QMessageBox::about(this, tr("Error"), tr("The ending address must not exceed the buffer size."));
+       return;
     }
+    block = chipData.mid(static_cast<int>(blockStartAddr), static_cast<int>(blockLen));
     ui->statusMessage->setText(tr("Saving block"));
     fileName = QFileDialog::getSaveFileName(this,
                                 QString(tr("Save block")),
                                 lastDirectory,
                                 "Data Images (*.bin *.BIN);;All files (*.*)");
+    ui->statusMessage->setText("");
+    if (fileName.isEmpty()) return;   // cancelled: do not create a file named ".bin"
     QFileInfo info(fileName);
     lastDirectory = info.filePath();
     if (QString::compare(info.suffix(), "bin", Qt::CaseInsensitive)) fileName = fileName + ".bin";
-    if (fileName.isEmpty()) return;
     QFile file(fileName);
     if (!file.open(QIODevice::WriteOnly))
     {
@@ -1819,6 +2046,11 @@ void MainWindow::receiveAddr2(QString addressData)
                                 QString(tr("Open block")),
                                 lastDirectory,
                                 "Data Images (*.bin *.BIN);;All files (*.*)");
+    if (fileName.isEmpty())
+    {
+        ui->statusMessage->setText("");
+        return;
+    }
     ui->statusMessage->setText(tr("Current file: ") + fileName);
     QFileInfo info(fileName);
     lastDirectory = info.filePath();
@@ -1831,7 +2063,7 @@ void MainWindow::receiveAddr2(QString addressData)
     block = file.readAll();
     blockLen = static_cast<uint32_t>(block.size());
     chipData = hexEdit->data();
-    if (blockStartAddr + blockLen > static_cast<uint32_t>(chipData.size()))
+    if (quint64(blockStartAddr) + blockLen > quint64(chipData.size()))
     {
         QMessageBox::about(this, tr("Error"), tr("The end address out of image size!"));
         return;
@@ -2177,6 +2409,7 @@ void MainWindow::doNotDisturb()
    ui->actionExit->setDisabled(true);
 
    ui->actionRead->setDisabled(true);
+   if (actionReadVerify) actionReadVerify->setDisabled(true);
    ui->actionWrite->setDisabled(true);
    ui->actionErase->setDisabled(true);
    ui->actionCheck_erase->setDisabled(true);
@@ -2253,6 +2486,7 @@ void MainWindow::doNotDisturbCancel()
    ui->actionExit->setDisabled(false);
 
    ui->actionRead->setDisabled(false);
+   if (actionReadVerify) actionReadVerify->setDisabled(false);
    ui->actionWrite->setDisabled(false);
    ui->actionErase->setDisabled(false);
    ui->actionCheck_erase->setDisabled(false);
@@ -2431,7 +2665,8 @@ void MainWindow::progInit()
     recNo = 0;
     QStringList verticalHeader;
     dataSize = dataChips.length();
-    while (dataPoz < dataSize)
+    const int maxRecords = static_cast<int>(sizeof(chips) / sizeof(chips[0]));
+    while (dataPoz + 0x44 <= dataSize && recNo < maxRecords)
     {
         for (j=0; j<0x30; j++)
              {
@@ -2620,8 +2855,9 @@ void MainWindow::on_actionExport_to_Intel_HEX_triggered()
                                      QString(tr("Save file")),
                                      lastDirectory,
                                      tr("Intel HEX Images") + " (*.hex *.HEX);;" + tr("All files") + " (*.*)");
-         QFileInfo info(fileName);
          ui->statusMessage->setText("");
+         if (fileName.isEmpty()) return;   // cancelled: do not create a file named ".hex"
+         QFileInfo info(fileName);
          lastDirectory = info.filePath();
          if (QString::compare(info.suffix(), "hex", Qt::CaseInsensitive)) fileName = fileName + ".hex";
          ui->statusMessage->setText(tr("Current file: ") + info.fileName());
@@ -2681,7 +2917,9 @@ void MainWindow::on_actionExport_to_Intel_HEX_triggered()
 void MainWindow::on_actionImport_from_Intel_HEX_triggered()
 {
     chipData = hexEdit->data();
-    int chipSize = int(currentChipSize);
+    // Records are stored into the buffer, so its size is the limit (this also
+    // covers "no chip selected" and NAND images with OOB).
+    int chipSize = static_cast<int>(chipData.size());
     uint_fast32_t lineLen, lo_addr, hi_addr, command, i;
     unsigned char currByte;
     uint8_t counter, checkSUM;
@@ -2744,7 +2982,7 @@ void MainWindow::on_actionImport_from_Intel_HEX_triggered()
                 strVal = currStr.mid(int(i) * 2 + 9, 2);
                 currByte = static_cast<unsigned char>(hexToInt(strVal));
                 // Checking valid address
-                if (hi_addr * 256 * 256 + lo_addr + i > static_cast<unsigned long>(chipSize))
+                if (quint64(hi_addr) * 256 * 256 + lo_addr + i >= quint64(chipSize))
                 {
                     QMessageBox::about(this, tr("Error"), tr("The address is larger than the size of the chip!"));
                     file.close();
@@ -2785,6 +3023,11 @@ void MainWindow::on_actionImport_from_Intel_HEX_triggered()
             if (counter != checkSUM)
             {
                 QMessageBox::about(this, tr("Error"), tr("Checksum error!"));
+                file.close();
+                fileName.clear();
+                hexEdit->setData(chipData);
+                ui->progressBar->setValue(0);
+                ui->crcEdit->setText(getCRC32(chipData));
                 return;
             }
         }
@@ -3072,6 +3315,8 @@ void MainWindow::on_actionCheck_erase_triggered()
 {
     lastOperationSucceeded = false;
     if (!validateNandOperation(false, false)) return;
+    if (!ensureClockTuned()) return;
+    QStringList skippedBadBlocks;   // NAND blocks skipped as bad (see below)
     //Verification of data erasure from the chip
     int res = 0;
     uint32_t step, numBlocks;
@@ -3149,8 +3394,34 @@ void MainWindow::on_actionCheck_erase_triggered()
                std::shared_ptr<uint8_t[]> buf(new uint8_t[step]);
                ui->checkBox_1->setStyleSheet("QCheckBox{font-weight:800;}");
                ui->statusMessage->setText(tr("Erase checking in ") + ui->comboBox_name->currentText());
+               opSpeedStart();
+               // Erase leaves blocks marked bad untouched (unless bad-block
+               // skipping is off), so the blank check skips them as well.
+               const uint32_t pagesPerBlock = (currentChipType == 6 && currentPageSize) ? currentBlockSize / currentPageSize : 0;
+               const bool skipBadBlocks = currentChipType == 6 && pagesPerBlock && (nandSettings & 0xf0) == 0x00;
                for (k = 0; k < numBlocks; k++)
                {
+                   if (skipBadBlocks && k % pagesPerBlock == 0)
+                   {
+                       const int bad = nand_checkBadBlock(k / pagesPerBlock, currentPageSize, pagesPerBlock, current_programmer);
+                       if (bad < 0)
+                       {
+                           QMessageBox::warning(this, tr("Error"), tr("Bad-block check failed. Erase check stopped."));
+                           ui->checkBox_1->setStyleSheet("");
+                           ProgDeviceClose(current_programmer);
+                           doNotDisturbCancel();
+                           clearCheckboxes();
+                           return;
+                       }
+                       if (bad == 1)
+                       {
+                           skippedBadBlocks << QString::number(k / pagesPerBlock);
+                           addr += step * pagesPerBlock;
+                           curBlock += pagesPerBlock;
+                           k += pagesPerBlock - 1;
+                           continue;
+                       }
+                   }
                    switch (currentChipType)
                       {
                       case 0:
@@ -3236,6 +3507,7 @@ void MainWindow::on_actionCheck_erase_triggered()
                          doNotDisturbCancel();
                          return;
                      }
+                     opSpeedUpdate(curBlock, numBlocks, step);
                      currentPercent = static_cast<int>((curBlock * 100.0) / numBlocks);
                      if (currentPercent != lastPercent)
                      {
@@ -3247,17 +3519,27 @@ void MainWindow::on_actionCheck_erase_triggered()
              else
              {
                 //Not correct Number fnd size of blocks
-               if (currentChipType == 0) QMessageBox::about(this, tr("Error"), tr("Before reading from chip please press 'Detect' button."));
-               if (currentChipType == 1) QMessageBox::about(this, tr("Error"), tr("Please select the chip parameters - manufacture and chip name."));
-
+               // Nothing was read, so this must not end as a successful operation.
+               if ((currentChipType == 0) || (currentChipType > 4)) QMessageBox::about(this, tr("Error"), tr("Before reading from chip please press 'Detect' button."));
+               else QMessageBox::about(this, tr("Error"), tr("Please select the chip parameters - manufacture and chip name."));
+               ProgDeviceClose(current_programmer);
+               clearCheckboxes();
+               return;
              }
              doNotDisturbCancel();
-             ui->statusMessage->setText("");
+             opSpeedFinish();
              ui->progressBar->setValue(0);
              ui->checkBox_1->setStyleSheet("");
              ProgDeviceClose(current_programmer);
              lastOperationSucceeded = true;
              finishNandRead(tr("Erase check complete"));
+             if (!skippedBadBlocks.isEmpty())
+             {
+                 const QString note = tr("Erase check passed. %1 bad block(s) were skipped, as Erase leaves them untouched: %2")
+                                          .arg(skippedBadBlocks.size()).arg(skippedBadBlocks.join(", "));
+                 ui->statusMessage->setText(note);
+                 qInfo().noquote() << note;
+             }
 
     }
       else
@@ -3563,7 +3845,7 @@ void MainWindow::applyPlatformRestrictions()
     ui->actionCH347F_safe->setChecked(current_programmer == PROG_CH347F_SAFE);
     SetItemStatus("comboBox_type", 1, true); // I2C is not included in this Windows port.
     SetItemStatus("comboBox_type", 2, true); // MicroWire is not included.
-    setWindowTitle(tr("IMSProg 1.9.3 - CH341A/B, CH347T/F SPI Programmer"));
+    setWindowTitle(tr("IMSProg 1.9.4 - CH341A/B, CH347T/F SPI Programmer"));
 #endif
 }
 
@@ -3603,6 +3885,7 @@ void MainWindow::setupProgrammerMenu()
 
     const struct { uint16_t khz; const char *text; } clocks[] = {
         {0,     QT_TR_NOOP("Automatic (per chip type)")},
+        {kClockAutoTune, QT_TR_NOOP("Auto-tune (measure this chip)")},
         {60000, QT_TR_NOOP("60 MHz (SPI NOR is limited to 30 MHz)")},
         {30000, QT_TR_NOOP("30 MHz")},
         {15000, QT_TR_NOOP("15 MHz")},
@@ -3657,7 +3940,12 @@ void MainWindow::updateProgrammerMenu()
     QString name = family == FamilyCH341 ? QStringLiteral("CH341A/B")
                  : family == FamilyCH347T ? QStringLiteral("CH347T") : QStringLiteral("CH347F");
     if (family != FamilyCH341)
-        name += " " + (spiClockChoice ? QString::number(spiClockChoice / 1000.0, 'g', 4) + " MHz" : tr("auto"));
+    {
+        if (spiClockChoice == kClockAutoTune)
+            name += " " + tr("auto-tune") + (tunedClock ? " " + formatClock(tunedClock) : QString());
+        else
+            name += " " + (spiClockChoice ? QString::number(spiClockChoice / 1000.0, 'g', 4) + " MHz" : tr("auto"));
+    }
     ui->lStatus->setText(name);
 }
 
@@ -3671,7 +3959,9 @@ void MainWindow::chooseProgrammer(int family, uint16_t clockKHz)
     default: on_actionCH341A_B_v1_2_triggered(); break;
     }
     spiClockChoice = family == FamilyCH341 ? 0 : clockKHz;
-    setSpiClockOverride(spiClockChoice);
+    tunedClock = 0;
+    tunedKey.clear();
+    applySpiClockChoice();
     defaultSpeed = getInterfaceSpeed(current_programmer, currentChipType, currentDelay);
     updateProgrammerMenu();
 }
@@ -3823,4 +4113,541 @@ void MainWindow::on_actionConnection_diagnostics_triggered()
     dialog.exec();
     if (timerWasActive) timer->start();
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// Verified read
+//
+// 1. Read the whole chip twice at the selected clock and compare block by block.
+//    Blocks that match in both reads are taken as they are: a transfer error
+//    almost never repeats identically.
+// 2. Blocks that differ are re-read twice at each lower clock (CH347 SPI: halve
+//    down to 1.875 MHz; I2C: 400/100/20 kHz) until both reads agree.
+// 3. Blocks that still differ at the lowest clock hold unstable bits (typically
+//    weak NAND cells read with on-die ECC Off). They are read 7 more times and
+//    every bit is set by majority vote; the report counts the unstable bits.
+// Only read commands are sent, the same ones as the normal Read.
+// ---------------------------------------------------------------------------
+
+QString MainWindow::formatClock(uint16_t khz) const
+{
+    if (khz >= 1000) return QString::number(khz / 1000.0, 'g', 4) + " MHz";
+    return QString::number(khz) + " kHz";
+}
+
+bool MainWindow::readGeometry(uint32_t &numBlocks, uint32_t &step, uint32_t &sectorsPerBlock) const
+{
+    sectorsPerBlock = 0;
+    if (!currentNumBlocks) return false;
+    switch (currentChipType)
+    {
+    case 0:                 //SPI
+        if (!currentBlockSize) return false;
+        step = currentBlockSize;
+        numBlocks = currentNumBlocks;
+        return true;
+    case 1:                 //I2C
+        if (!currentPageSize) return false;
+        step = 128;
+        numBlocks = currentChipSize / step;
+        return numBlocks > 0;
+    case 2: case 3: case 4: case 5:
+        if (!currentPageSize) return false;
+        step = currentPageSize;
+        numBlocks = currentChipSize / step;
+        return numBlocks > 0;
+    case 6:                 //NAND
+        if (!currentPageSize || !currentBlockSize) return false;
+        numBlocks = currentChipSize / currentBlockSize;
+        sectorsPerBlock = currentBlockSize / currentPageSize;
+        step = nandRaw ? currentBlockSize + currentECCsize * sectorsPerBlock : currentBlockSize;
+        return numBlocks > 0;
+    default:
+        return false;
+    }
+}
+
+// Same calls as the Read loop. Returns > 0 on success, <= 0 on error.
+int MainWindow::readChipUnit(uint8_t *buf, uint32_t k, uint32_t step, uint32_t sectorsPerBlock)
+{
+    int res = 0;
+    switch (currentChipType)
+    {
+    case 0:
+        res = snor_read_param(buf, k * step, step, step, currentAddr4bit, current_programmer);
+        break;
+    case 1:
+        if (current_programmer != 4) res = ch34xi2cBlockRead(buf, k * step, step, currentAlgorithm, current_programmer);
+        else res = ft232I2cBlockRead(buf, k * step, step, currentAlgorithm);
+        if (res == 0) res = 1;
+        break;
+    case 2:
+        if (current_programmer != 4) res = Read_EEPROM_3wire_param(buf, static_cast<int>(k * step), static_cast<int>(step), static_cast<int>(currentChipSize), currentAlgorithm);
+        else res = ft232MWReadBlock(buf, static_cast<int>(k * step), static_cast<int>(step), currentAlgorithm);
+        if (res == 0) res = 1;
+        break;
+    case 3:
+    case 4:
+        res = s95_read_param(buf, k * step, step, step, currentAlgorithm, current_programmer);
+        break;
+    case 5:
+        res = at45_read_param(buf, k * step, step, step, currentAlgorithm, current_programmer);
+        break;
+    case 6:
+        res = nand_block_read(buf, nandRaw ? currentPageSize + currentECCsize : currentPageSize, k, sectorsPerBlock, current_programmer);
+        if (res == 0) res = 1;
+        break;
+    default:
+        res = -1;
+    }
+    return res;
+}
+
+QVector<uint16_t> MainWindow::verifiedReadSpeeds(uint16_t start) const
+{
+    QVector<uint16_t> speeds{start};
+    if (currentChipType == 1)
+    {
+        for (uint16_t khz : {400, 100, 20}) if (khz < start) speeds << khz;
+        return speeds;
+    }
+    // MicroWire is bit-banged; CH341A/B and FT232H keep their fixed clock.
+    if (currentChipType == 2 || programmerFamily() == FamilyCH341) return speeds;
+    for (uint16_t khz : {30000, 15000, 7500, 3750, 1875}) if (khz < start) speeds << khz;
+    return speeds;
+}
+
+bool MainWindow::openForVerifiedRead(uint16_t speed, const QString &operation)
+{
+    statusCH341 = ProgDeviceInit(current_programmer, currentChipType, speed);
+    ch341StatusFlashing();
+    if (statusCH341 != 0)
+    {
+        showConnectionError();
+        return false;
+    }
+    qDebug() << "Verified read: interface speed" << speed << "kHz";
+    if (currentChipType == 6 && !prepareNandOperation(operation.isEmpty() ? tr("Verified read") : operation))
+    {
+        ProgDeviceClose(current_programmer);
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::readAndVerify()
+{
+    if (ui->actionStop->isEnabled()) return;
+    if (!validateNandOperation(false, false)) return;
+    defaultSpeed = getInterfaceSpeed(current_programmer, currentChipType, currentDelay);
+    if (!ensureClockTuned()) return;
+    const uint16_t startSpeed = currentChipType == 1 ? currentI2CBusSpeed : defaultSpeed;
+    uint32_t numBlocks = 0, step = 0, sectorsPerBlock = 0;
+    if (!readGeometry(numBlocks, step, sectorsPerBlock))
+    {
+        if ((currentChipType == 0) || (currentChipType > 4))
+            QMessageBox::about(this, tr("Error"), tr("Before reading from chip please press 'Detect' button."));
+        else QMessageBox::about(this, tr("Error"), tr("Please select the chip parameters - manufacture and chip name"));
+        return;
+    }
+    const quint64 total = quint64(numBlocks) * step;
+    if (total > quint64((std::numeric_limits<int>::max)()))
+    {
+        QMessageBox::warning(this, tr("Error"), tr("The chip is too large for a verified read."));
+        return;
+    }
+    const QVector<uint16_t> speeds = verifiedReadSpeeds(startSpeed);
+    QByteArray first, second;
+    try {
+        first = QByteArray(int(total), char(0xff));
+        second = QByteArray(int(total), char(0xff));
+    } catch (const std::bad_alloc &) {
+        QMessageBox::warning(this, tr("Error"), tr("Not enough memory for two copies of the chip."));
+        return;
+    }
+    std::vector<uint8_t> x(step), y(step);
+
+    newFileName = ui->comboBox_name->currentText();
+    ui->crcEdit->setText("");
+    doNotDisturb();
+    if (!openForVerifiedRead(speeds[0]))
+    {
+        doNotDisturbCancel();
+        clearCheckboxes();
+        return;
+    }
+    if (numberOfReads > 0)
+    {
+        oldChipData = chipData;
+        oldFileName = ui->comboBox_name->currentText();
+    }
+    if (currentChipType == 6)
+    {
+        chipData.resize(static_cast<int>(nandImageSize()));
+        chipData.fill(char(0xff));
+        nandReadIncomplete = true;
+        filled = false;
+        hexEdit->setData(chipData);
+    }
+    ui->pushButton->setStyleSheet(redKeyStyle);
+    ui->progressBar->setRange(0, 100);
+    ui->progressBar->setValue(0);
+
+    // Closes the programmer and restores the UI; used on every exit path.
+    auto finish = [&]() {
+        opSpeedFinish();
+        ProgDeviceClose(current_programmer);
+        ui->progressBar->setValue(0);
+        ui->pushButton->setStyleSheet(grnKeyStyle);
+        doNotDisturbCancel();
+    };
+    // Reads one block; 0 = ok, -1 = error (already reported), 1 = stopped by the user.
+    auto readOne = [&](uint8_t *dst, uint32_t k) -> int {
+        const int res = readChipUnit(dst, k, step, sectorsPerBlock);
+        if (statusCH341 != 0) { showConnectionError(); return -1; }
+        if (res <= 0)
+        {
+            if (currentChipType == 6)
+                ui->label_nandInfo->setText(tr("Read failed at block %1 (error %2). Buffer is incomplete; unread bytes are FF.").arg(k).arg(res));
+            QMessageBox::about(this, tr("Error"), tr("Error reading block ") + QString::number(k));
+            return -1;
+        }
+        qApp->processEvents();
+        if (isHalted) { isHalted = false; return 1; }
+        return 0;
+    };
+    auto setProgress = [&](quint64 done, quint64 all) {
+        ui->progressBar->setValue(all ? static_cast<int>(done * 100 / all) : 0);
+    };
+    auto readPass = [&](QByteArray &dst, const QString &label) -> int {
+        ui->statusMessage->setText(label);
+        opSpeedStart();
+        for (uint32_t k = 0; k < numBlocks; k++)
+        {
+            const int r = readOne(reinterpret_cast<uint8_t *>(dst.data()) + quint64(k) * step, k);
+            if (r) return r;
+            if (&dst == &first && currentChipType != 6 && quint64(k) * step < 0x500)
+                hexEdit->setData(dst);
+            opSpeedUpdate(k + 1, numBlocks, step);
+            setProgress(k + 1, numBlocks);
+        }
+        return 0;
+    };
+
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const QString chip = ui->comboBox_name->currentText();
+    if (readPass(first, tr("Verified read: pass 1 of 2 at %1 from %2").arg(formatClock(speeds[0]), chip)))
+    { finish(); return; }
+    // ECC statistics then describe one full pass (plus any re-reads).
+    if (currentChipType == 6) nand_reset_ecc_read_status();
+    if (readPass(second, tr("Verified read: pass 2 of 2 at %1 from %2").arg(formatClock(speeds[0]), chip)))
+    { finish(); return; }
+
+    QVector<uint32_t> mismatched;
+    for (uint32_t k = 0; k < numBlocks; k++)
+        if (memcmp(first.constData() + quint64(k) * step, second.constData() + quint64(k) * step, step))
+            mismatched << k;
+    second = QByteArray();  // the result is assembled in "first"
+    const int initialMismatches = mismatched.size();
+
+    int fixedBySlowerClock = 0;
+    uint16_t slowestClockNeeded = 0;
+    uint16_t currentClock = speeds[0];
+    for (int si = 1; si < speeds.size() && !mismatched.isEmpty(); ++si)
+    {
+        ProgDeviceClose(current_programmer);
+        if (!openForVerifiedRead(speeds[si])) { doNotDisturbCancel(); ui->pushButton->setStyleSheet(grnKeyStyle); ui->progressBar->setValue(0); return; }
+        currentClock = speeds[si];
+        ui->statusMessage->setText(tr("Verified read: re-reading %1 differing block(s) at %2")
+                                   .arg(mismatched.size()).arg(formatClock(currentClock)));
+        QVector<uint32_t> stillDifferent;
+        for (int i = 0; i < mismatched.size(); ++i)
+        {
+            const uint32_t k = mismatched[i];
+            int r = readOne(x.data(), k);
+            if (!r) r = readOne(y.data(), k);
+            if (r) { finish(); return; }
+            if (!memcmp(x.data(), y.data(), step))
+            {
+                memcpy(first.data() + quint64(k) * step, x.data(), step);
+                ++fixedBySlowerClock;
+                slowestClockNeeded = currentClock;
+            }
+            else stillDifferent << k;
+            setProgress(i + 1, mismatched.size());
+        }
+        mismatched = stillDifferent;
+    }
+
+    // Bitwise majority vote over fresh reads at the slowest clock.
+    const int votes = 7;
+    quint64 unstableBits = 0, nearlyTiedBits = 0;
+    QStringList unstableBlocks;
+    if (!mismatched.isEmpty())
+    {
+        ui->statusMessage->setText(tr("Verified read: %1 block(s) still differ at %2, reading each %3 times for a majority vote")
+                                   .arg(mismatched.size()).arg(formatClock(currentClock)).arg(votes));
+        std::vector<std::vector<uint8_t>> reads(votes, std::vector<uint8_t>(step));
+        for (int i = 0; i < mismatched.size(); ++i)
+        {
+            const uint32_t k = mismatched[i];
+            for (int v = 0; v < votes; ++v)
+                if (readOne(reads[v].data(), k)) { finish(); return; }
+            uint8_t *out = reinterpret_cast<uint8_t *>(first.data()) + quint64(k) * step;
+            for (uint32_t j = 0; j < step; ++j)
+            {
+                uint8_t value = 0;
+                for (int bit = 0; bit < 8; ++bit)
+                {
+                    int ones = 0;
+                    for (int v = 0; v < votes; ++v) ones += (reads[v][j] >> bit) & 1;
+                    if (ones * 2 > votes) value |= uint8_t(1u << bit);
+                    if (ones != 0 && ones != votes) ++unstableBits;
+                    if (ones == votes / 2 || ones == votes / 2 + 1) ++nearlyTiedBits;
+                }
+                out[j] = value;
+            }
+            if (unstableBlocks.size() < 40) unstableBlocks << QString::number(k);
+            else if (unstableBlocks.size() == 40) unstableBlocks << "...";
+            setProgress(i + 1, mismatched.size());
+        }
+    }
+
+    chipData = first;
+    first = QByteArray();
+    hexEdit->setData(chipData);
+    nandReadIncomplete = false;
+    const QString crc = getCRC32(chipData);
+    ui->crcEdit->setText(crc);
+    newFileName = chip;
+    finish();
+    filled = 0;
+    numberOfReads++;
+    finishNandRead(tr("Verified read complete"));
+
+    const QString unit = currentChipType == 6 ? tr("block(s)") : tr("segment(s)");
+    const QString duration = formatDuration((elapsed.elapsed() + 500) / 1000);
+    QString text;
+    if (!initialMismatches)
+    {
+        text = tr("Both reads are identical at %1.").arg(formatClock(speeds[0]));
+        ui->statusMessage->setText(tr("Verified read OK: 2 identical reads at %1, CRC32 %2, %3")
+                                   .arg(formatClock(speeds[0]), crc, duration));
+    }
+    else
+    {
+        text = tr("The two reads at %1 differed in %2 of %3 %4.")
+                   .arg(formatClock(speeds[0])).arg(initialMismatches).arg(numBlocks).arg(unit);
+        if (fixedBySlowerClock)
+            text += "\n\n" + tr("%1 of them read identically twice after lowering the clock (down to %2); those reads were used. Read this chip at %2 or lower next time.")
+                                 .arg(fixedBySlowerClock).arg(formatClock(slowestClockNeeded));
+        if (!mismatched.isEmpty())
+        {
+            text += "\n\n" + tr("%1 %2 still differed at %3. Each was read %4 more times and every bit was set by majority vote: %5 unstable bit(s), %6 of them nearly tied (3:4).")
+                                 .arg(mismatched.size()).arg(unit).arg(formatClock(currentClock)).arg(votes)
+                                 .arg(unstableBits).arg(nearlyTiedBits);
+            text += "\n" + tr("Affected: %1").arg(unstableBlocks.join(", "));
+            if (currentChipType == 6 && !ui->comboBox_onDieEcc->currentData().toBool())
+                text += "\n\n" + tr("With on-die ECC Off this is usually weak cells in the chip, not the connection. The chip's ECC corrects such single-bit errors; read with ECC On to see the corrected data.");
+            else
+                text += "\n\n" + tr("Check the wiring, clip contact and power supply, then read again.");
+        }
+        ui->statusMessage->setText(tr("Verified read: %1 differing %2 resolved, CRC32 %3, %4")
+                                   .arg(initialMismatches).arg(unit).arg(crc, duration));
+    }
+    text += "\n\nCRC32: " + crc;
+    if (mismatched.isEmpty()) QMessageBox::information(this, tr("Verified read"), text);
+    else QMessageBox::warning(this, tr("Verified read"), text);
+}
+
+// ---------------------------------------------------------------------------
+// Clock auto-tune
+//
+// Finds the fastest CH347 clock at which this chip, with this wiring, reads
+// back identically. Only read commands are sent:
+//  - SPI NAND: one PAGE READ (13h) puts a page with varied data into the
+//    chip's cache register; the cache (03h), the JEDEC ID and the A0/B0
+//    feature registers are then read again and again. The cache does not
+//    change, so a difference can only be a transfer error, never a weak cell.
+//  - SPI NOR: one 4 KB area with varied data and the JEDEC ID are re-read.
+// (A Winbond chip still in continuous-read mode is switched to buffer mode
+// first, which every operation does anyway.)
+// The reference is taken at 1.875 MHz. Clocks are tried from the fastest
+// down; the first clock that passes a short and then a longer run is used
+// without further margin (the verify step re-checks mismatches at lower
+// clocks, see on_actionVerify_triggered()).
+// ---------------------------------------------------------------------------
+
+void MainWindow::applySpiClockChoice()
+{
+    if (spiClockChoice == kClockAutoTune) setSpiClockOverride(tunedClock);  // 0 = per-chip default until measured
+    else setSpiClockOverride(spiClockChoice);
+}
+
+bool MainWindow::ensureClockTuned()
+{
+    if (spiClockChoice != kClockAutoTune || programmerFamily() == FamilyCH341) return true;
+    if (currentChipType != 0 && currentChipType != 6) return true;
+    const QString key = QString("%1/%2/%3/%4").arg(current_programmer).arg(currentChipType)
+                            .arg(ui->comboBox_name->currentText()).arg(currentPageSize);
+    if (!tunedClock || key != tunedKey)
+    {
+        const QString previous = ui->statusMessage->text();
+        ui->statusMessage->setText(tr("Auto-tune: measuring the fastest reliable clock for this chip..."));
+        ui->progressBar->setRange(0, 0);
+        // The periodic connection probe reopens and closes the programmer.
+        // Fired from inside the measurement it closed the connection under
+        // test, so every clock "failed" and the result was always 1.875 MHz.
+        const bool timerWasActive = timer->isActive();
+        timer->stop();
+        qApp->processEvents(QEventLoop::ExcludeUserInputEvents);
+        QString detail;
+        const uint16_t clock = measureFastestClock(&detail);
+        if (timerWasActive) timer->start();
+        ui->progressBar->setRange(0, 100);
+        ui->progressBar->setValue(0);
+        ch341StatusFlashing();
+        if (!clock)
+        {
+            ui->statusMessage->setText(previous);
+            QMessageBox::warning(this, tr("Auto-tune"), tr("Clock measurement failed: %1").arg(detail));
+            return false;
+        }
+        tunedClock = clock;
+        tunedKey = key;
+        applySpiClockChoice();
+        updateProgrammerMenu();
+        ui->statusMessage->setText(tr("Auto-tune: %1 (%2)").arg(formatClock(clock), detail));
+        qInfo().noquote() << "Auto-tune:" << formatClock(clock) << detail;
+    }
+    const uint16_t automatic = getInterfaceSpeed(current_programmer, currentChipType, currentDelay);
+    defaultSpeed = automatic < tunedClock ? automatic : tunedClock;
+    return true;
+}
+
+uint16_t MainWindow::measureFastestClock(QString *detail)
+{
+    const bool nand = currentChipType == 6;
+    const uint16_t slowest = 1875;
+    const u8 prog = current_programmer;
+    const uint32_t length = nand ? (currentPageSize ? currentPageSize + currentECCsize : 2112u) : 4096u;
+    std::vector<uint8_t> reference(length), probe(length);
+    u8 idRef[3] = {0, 0, 0}, regRef[2] = {0, 0};
+    uint32_t norOffset = 0;
+
+    auto open = [&](uint16_t khz) {
+        ProgDeviceClose(prog);
+        statusCH341 = ProgDeviceInit(prog, currentChipType, khz);
+        return statusCH341 == 0;
+    };
+    auto readId = [&](u8 *id) {
+        u8 raw[5] = {0xff, 0xff, 0xff, 0xff, 0xff};
+        const int r = nand ? nand_read_devid(raw, 3, prog) : snor_read_devid(raw, 3, prog);
+        memcpy(id, raw, 3);
+        return r == 0;
+    };
+    auto readData = [&](uint8_t *out) {
+        if (nand) return nand_read_cache(out, length, prog) == 0;
+        return snor_read_param(out, norOffset, length, length, currentAddr4bit, prog) > 0;
+    };
+    auto readRegs = [&](u8 *regs) {
+        if (!nand) return true;
+        return nand_get_feature(0xa0, &regs[0], prog) == 0 && nand_get_feature(0xb0, &regs[1], prog) == 0;
+    };
+    auto variety = [](const std::vector<uint8_t> &data) {
+        bool seen[256] = {false};
+        int distinct = 0;
+        for (uint8_t b : data) if (!seen[b]) { seen[b] = true; ++distinct; }
+        return distinct;
+    };
+
+    if (!open(slowest)) { *detail = tr("the programmer is not connected"); ProgDeviceClose(prog); return 0; }
+    if (!readId(idRef) || idRef[0] == 0x00 || idRef[0] == 0xff)
+    { *detail = tr("the chip does not answer"); ProgDeviceClose(prog); return 0; }
+
+    // Winbond W25N in continuous-read mode (BUF=0, the power-up state of some
+    // variants) streams on into the following pages, so repeated cache reads
+    // would differ at any clock. Select buffer mode first, as every operation
+    // does; the ECC bit is left as it is.
+    if (nand && idRef[0] == 0xef)
+    {
+        u8 b0 = 0;
+        if (nand_get_feature(0xb0, &b0, prog) != 0 ||
+            (!(b0 & 0x08) && nand_configure_ecc(prog, (b0 & 0x10) != 0, 1, &b0) != 0))
+        { *detail = tr("the chip does not answer"); ProgDeviceClose(prog); return 0; }
+    }
+
+    // Pick test data with many different byte values (an all-FF page would
+    // hide most transfer errors). Search at 7.5 MHz, then re-read the pick at
+    // the slowest clock as the reference.
+    {
+        open(7500);
+        int bestVariety = -1;
+        uint32_t bestUnit = 0;
+        const uint32_t units = nand ? 128 : 64;   // 128 pages / 256 KB of NOR
+        for (uint32_t unit = 0; unit < units && bestVariety < 160; ++unit)
+        {
+            if (nand) { if (nand_load_page_to_cache(unit, prog)) break; }
+            else norOffset = unit * length;
+            if (!readData(probe.data())) break;
+            const int v = variety(probe);
+            if (v > bestVariety) { bestVariety = v; bestUnit = unit; }
+            if ((unit & 15) == 15) qApp->processEvents(QEventLoop::ExcludeUserInputEvents);
+        }
+        open(slowest);
+        if (nand) { if (nand_load_page_to_cache(bestUnit, prog)) { *detail = tr("page read failed"); ProgDeviceClose(prog); return 0; } }
+        else norOffset = bestUnit * length;
+    }
+    if (!readData(reference.data()) || !readData(probe.data()) || probe != reference || !readRegs(regRef))
+    {
+        ProgDeviceClose(prog);
+        *detail = tr("reads differ even at %1; check the wiring").arg(formatClock(slowest));
+        return slowest;
+    }
+
+    // Returns the number of bytes compared, or -1 on the first difference.
+    auto stress = [&](qint64 budgetMs) -> qint64 {
+        QElapsedTimer t;
+        t.start();
+        qint64 bytes = 0;
+        int round = 0;
+        while (t.elapsed() < budgetMs)
+        {
+            if (!readData(probe.data()) || probe != reference) return -1;
+            bytes += length;
+            if ((round & 7) == 0)
+            {
+                u8 id[3], regs[2] = {regRef[0], regRef[1]};
+                if (!readId(id) || memcmp(id, idRef, 3)) return -1;
+                if (!readRegs(regs) || regs[0] != regRef[0] || regs[1] != regRef[1]) return -1;
+            }
+            if ((++round & 31) == 0) qApp->processEvents(QEventLoop::ExcludeUserInputEvents);
+        }
+        return bytes;
+    };
+
+    QStringList failed;
+    uint16_t chosen = slowest;
+    qint64 testedBytes = 0;
+    for (uint16_t khz : {60000, 30000, 15000, 7500, 3750})
+    {
+        if (!nand && khz > 30000) continue;   // SPI NOR uses plain READ (03h)
+        if (!open(khz)) { *detail = tr("the programmer is not connected"); ProgDeviceClose(prog); return 0; }
+        ui->statusMessage->setText(tr("Auto-tune: testing %1...").arg(formatClock(khz)));
+        qApp->processEvents(QEventLoop::ExcludeUserInputEvents);
+        qint64 bytes = stress(700);
+        if (bytes >= 0)
+        {
+            const qint64 more = stress(2300);   // no margin is kept, so test the winner longer
+            bytes = more >= 0 ? bytes + more : -1;
+        }
+        if (bytes >= 0) { chosen = khz; testedBytes = bytes; break; }
+        failed << formatClock(khz);
+    }
+    ProgDeviceClose(prog);
+    QString text = tr("%1 MB re-read without errors").arg(testedBytes / 1048576.0, 0, 'f', 1);
+    if (!failed.isEmpty()) text += tr("; failed at %1").arg(failed.join(", "));
+    *detail = text;
+    return chosen;
 }

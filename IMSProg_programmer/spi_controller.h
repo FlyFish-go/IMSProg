@@ -154,6 +154,12 @@ SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Write_NByte( u8 *ptr_data, u32 len, SPI_CONT
  */
 SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Read_NByte( u8 *ptr_rtn_data, u32 len, SPI_CONTROLLER_SPEED_T speed, u8 deviceType );
 
+/* Full-duplex exchange for short transactions: buf is clocked out and replaced
+ * with the bytes clocked in (one USB round trip on CH347 instead of a write and
+ * a read). Only call it when SPI_CONTROLLER_Has_Full_Duplex() is non-zero. */
+int SPI_CONTROLLER_Has_Full_Duplex( u8 deviceType );
+SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Full_Duplex( u8 *buf, u32 len, u8 deviceType );
+
 /*------------------------------------------------------------------------------------
  * FUNCTION: SPI_CONTROLLER_RTN_T SPI_CONTROLLER_Chip_Select_Low( void )
  * PURPOSE : To provide interface for set chip select low in SPI bus.

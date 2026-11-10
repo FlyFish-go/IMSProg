@@ -21,6 +21,7 @@
 #include <QFileDialog>
 #include <QTime>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QSettings>
 #include <QResizeEvent>
 #include <QComboBox>
@@ -165,12 +166,37 @@ private:
     bool nandReadIncomplete = false;
     bool uiReady = false;
     QString nandOperationDescription;
+    // Throughput/ETA shown in the status bar during read/write/verify/check.
+    QElapsedTimer opTimer;
+    QString opLabel;
+    qint64 opLastShownMs = -1;
+    quint64 opBytesDone = 0;
+    void opSpeedStart();
+    void opSpeedUpdate(quint64 blocksDone, quint64 totalBlocks, quint64 bytesPerBlock);
+    void opSpeedFinish();
     quint64 nandImageSize() const;
     bool validateNandOperation(bool writing, bool checkBuffer);
     bool prepareNandOperation(const QString &operation);
     void updateNandSelectionInfo();
     void updateNandControlVisibility();
     void finishNandRead(const QString &operation);
+    // Verified read: read twice, compare, re-read mismatching blocks at lower
+    // clocks and fall back to a bitwise majority vote (see readAndVerify()).
+    QAction *actionReadVerify = nullptr;
+    void readAndVerify();
+    bool readGeometry(uint32_t &numBlocks, uint32_t &step, uint32_t &sectorsPerBlock) const;
+    int readChipUnit(uint8_t *buf, uint32_t k, uint32_t step, uint32_t sectorsPerBlock);
+    QVector<uint16_t> verifiedReadSpeeds(uint16_t start) const;
+    bool openForVerifiedRead(uint16_t speed, const QString &operation = QString());
+    QString formatClock(uint16_t khz) const;
+    // Clock auto-tune: menu choice kClockAutoTune measures the fastest clock
+    // at which this chip reads back identically, once per chip.
+    static constexpr uint16_t kClockAutoTune = 0xffff;
+    uint16_t tunedClock = 0;
+    QString tunedKey;
+    bool ensureClockTuned();
+    uint16_t measureFastestClock(QString *detail);
+    void applySpiClockChoice();
     uint32_t pagesPerBlockForReport() const;
     bool confirmNandWriteMode();
     bool nandWriteModeConfirmed = false;
