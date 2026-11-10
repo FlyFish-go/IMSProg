@@ -4,7 +4,8 @@ CH347 clock auto-tune (measures the fastest clock at which the chip reads back
 identically), transfer rate and remaining time in the status bar, ESMT
 F50D1G41LB (1.8V). SPI NAND read/write speed-up: short waits no longer take a
 whole Windows timer tick, status polls use one USB round trip, command and data
-go out as one write, blank pages are not programmed. Verify re-checks a mismatch
+go out as one write, blank pages are not programmed, the WCH driver timeout is
+set once instead of before every transfer. Verify re-checks a mismatch
 at lower clocks (CH341A/B: by reading the block again) before reporting it;
 Verify and Erase check skip blocks marked bad and list them. The window stays responsive during long NAND blocks.
 Fix: Verify compared the wrong image position after a bad block in main-only
