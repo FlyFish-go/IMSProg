@@ -102,6 +102,10 @@ struct windows_backend {
     wch_io_fn write;
     wch_timeout_fn timeout;
     wch_info_fn info;
+    /* Timeout currently set in the vendor driver (0 = unknown). SetTimeout is
+     * a driver call of its own; repeating it before every transfer added one
+     * kernel round trip to each of the ~18 USB transfers of a NAND page. */
+    unsigned int current_timeout;
 };
 
 enum { FAMILY_CH347 = 0, FAMILY_CH341 = 1 };
@@ -347,6 +351,7 @@ static int windows_open_impl(struct ch347_priv *p, int diagnostic_only)
             report_error("SetTimeout at index %lu failed (Windows error %lu).", b->index, GetLastError());
             goto fail;
         }
+        b->current_timeout = 3000;
         report_append("SetTimeout: success. SPI initialization is the next stage.\n");
     } else report_append("Read-only enumeration succeeded; SPI packet/configuration behavior was not tested.\n");
     report_append("Selected backend: WCH vendor DLL.\n");
@@ -462,6 +467,7 @@ static int windows341_open_impl(struct ch347_priv *p, int diagnostic_only)
     if (!diagnostic_only && !b->timeout(b->index, 3000, 3000)) {
         report_error("CH341 SetTimeout failed (Windows error %lu).", GetLastError()); goto fail;
     }
+    if (!diagnostic_only) b->current_timeout = 3000;
     report_append("Selected backend: CH341 vendor DLL. %s\n", diagnostic_only ? "Metadata-only diagnostics; no GPIO/SPI setup." : "SPI setup is the next stage.");
     last_error[0] = '\0';
     return 0;
@@ -688,10 +694,14 @@ int ch347_windows_transfer(struct ch347_priv *p, unsigned char endpoint,
         *transferred = actual_usb;
         return 0;
     }
-    SetLastError(0);
-    if (!b->timeout(b->index, timeout, timeout)) {
-        report_error("Transfer SetTimeout index=%lu failed (Windows error %lu).", b->index, GetLastError());
-        return -EIO;
+    if (b->current_timeout != timeout) {
+        SetLastError(0);
+        b->current_timeout = 0;
+        if (!b->timeout(b->index, timeout, timeout)) {
+            report_error("Transfer SetTimeout index=%lu failed (Windows error %lu).", b->index, GetLastError());
+            return -EIO;
+        }
+        b->current_timeout = timeout;
     }
     actual = (ULONG)length;
     SetLastError(0);
